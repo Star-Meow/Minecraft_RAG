@@ -1,0 +1,7 @@
+interface:
+  display_name: "Dev Environment"
+  short_description: "開發環境認知與安全編輯規範"
+  default_prompt: "Use $dev-environment to summarize the local development setup and safety rules before starting work."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,54 @@
+project-limit Skill 生成總結
+========================================
+
+日期：2026-08-25
+專案：H:\git\Minecraft_RAG
+
+一、任務目標
+----------------------------------------
+依 read.md 的規格，建立名為 project-limit 的全域 Codex skill，
+內容為 instruction-only（不含額外腳本），不得異動 read.md 原始內容。
+
+二、生成流程
+----------------------------------------
+1. 讀取 read.md 需求規格，確認四大規則與 description 關鍵字。
+2. 使用官方 init_skill.py 初始化骨架：
+   python init_skill.py project-limit --path skills
+   產出 skills/project-limit/SKILL.md 與 agents/openai.yaml。
+3. 將 read.md 的規則完整填入 SKILL.md 正文，
+   description 包含「專案根目錄限制、敏感系統資訊需確認、
+   UTF-8 編碼、最小化模組化修改」等觸發關鍵字。
+   同步更新 openai.yaml 的 short_description 為繁體中文。
+4. 執行官方驗證器 quick_validate.py：
+   - 首次執行因 Windows 預設 cp950 編碼讀檔失敗。
+   - 設定 PYTHONUTF8=1 後驗證通過：「Skill is valid!」。
+5. 安裝到全域 skills 目錄：
+   Copy-Item -Recurse -Force skills\project-limit
+       "$env:USERPROFILE\.codex\skills\project-limit"
+   首次嘗試因沙箱限制被拒，經使用者核准後成功複製。
+
+三、產出檔案
+----------------------------------------
+repo 內原始碼（版控用）：
+- skills/project-limit/SKILL.md
+- skills/project-limit/agents/openai.yaml
+
+全域安裝位置：
+- C:\Users\sss37\.codex\skills\project-limit\SKILL.md (2397 bytes)
+- C:\Users\sss37\.codex\skills\project-limit\agents\openai.yaml (106 bytes)
+
+四、skill 涵蓋的四大規則
+----------------------------------------
+1. 專案範圍限制：預設僅能在專案根目錄及子目錄內讀寫執行；
+   存取專案外資源需先說明路徑與目的並取得同意。
+2. 敏感系統資訊與硬體健康：涉及系統診斷、磁碟、網路等查詢
+   必須先取得明確確認；永遠不得要求或輸出憑證類資訊。
+3. UTF-8 編碼規範：文字檔預設 UTF-8；修改既有檔案保留原編碼；
+   不得因操作造成亂碼或不必要的編碼變更。
+4. 最小化與模組化修改：只改必要區塊；不擅自重構或格式化；
+   修改後列出檔案與原因；僅跑相關測試。
+
+五、後續生效方式
+----------------------------------------
+重啟 Codex CLI 後，harness 掃描全域 skills 目錄即可辨識此 skill。
+當使用者要求讀寫本機檔案或進行系統診斷時，skill 會被載入並約束行為。

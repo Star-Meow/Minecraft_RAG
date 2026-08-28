@@ -1,0 +1,46 @@
+{
+  "sources": [
+    {
+      "url": "https://guide.appliedenergistics.org/1.21.1/index",
+      "title": "Applied Energistics 2 Guide - Index",
+      "minecraft_version": "1.21.1",
+      "mod": "Applied Energistics 2",
+      "source_type": "official_guide"
+    },
+    {
+      "url": "https://guide.appliedenergistics.org/1.21.1/getting-started",
+      "title": "Applied Energistics 2 Guide - Getting Started",
+      "minecraft_version": "1.21.1",
+      "mod": "Applied Energistics 2",
+      "source_type": "official_guide"
+    },
+    {
+      "url": "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/autocrafting",
+      "title": "Applied Energistics 2 Guide - Autocrafting",
+      "minecraft_version": "1.21.1",
+      "mod": "Applied Energistics 2",
+      "source_type": "official_guide"
+    },
+    {
+      "url": "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/energy",
+      "title": "Applied Energistics 2 Guide - Energy",
+      "minecraft_version": "1.21.1",
+      "mod": "Applied Energistics 2",
+      "source_type": "official_guide"
+    },
+    {
+      "url": "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/import-export-storage",
+      "title": "Applied Energistics 2 Guide - Import Export Storage",
+      "minecraft_version": "1.21.1",
+      "mod": "Applied Energistics 2",
+      "source_type": "official_guide"
+    },
+    {
+      "url": "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/channels",
+      "title": "Applied Energistics 2 Guide - Channels",
+      "minecraft_version": "1.21.1",
+      "mod": "Applied Energistics 2",
+      "source_type": "official_guide"
+    }
+  ]
+}
