@@ -117,7 +117,7 @@ Retrieval evaluation: NOT STARTED
 - **Embedding dimension**：384（依模型文件；UNKNOWN — REQUIRES RUNTIME VERIFICATION）
 - **Distance metric**：待決策（向量已正規化，建議 cosine）
 - **Vector column**：未來使用 pgvector 的 `vector` 型別（尚未建立）
-- **Embedding input**：`section_title` + `page_title` + `content`；`source_url`／`fetched_at`／`chunk_id` 保留為 metadata／provenance 欄位，不進入 embedding 文字
+- **Embedding input**：`page_title` + `section_title` + `content`；`source_url`／`fetched_at`／`chunk_id` 保留為 metadata／provenance 欄位，不進入 embedding 文字
 - **Stable identifier**：`source_url` + `chunk_id` 複合鍵（`chunk_id` 為頁內編號，非全域唯一）；是否改用穩定 UUID 待 index 階段決策
 - **Model cache**：Hugging Face 預設快取目錄（UNKNOWN — REQUIRES RUNTIME VERIFICATION）
 - **Truncation**：模型 max_seq_length 為 256 wordpieces，超長 chunk 會截斷（實際影響 UNKNOWN — REQUIRES RUNTIME VERIFICATION）

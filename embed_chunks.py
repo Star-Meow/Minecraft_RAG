@@ -57,7 +57,7 @@ NORMALIZE_EMBEDDINGS = True  # all-MiniLM-L6-v2 為 cosine 相似度模型，慣
 DEVICE = None  # None = 交由 sentence-transformers 自動選擇（有 CUDA 用 GPU，否則 CPU）
 
 # Embedding 輸入契約（Option B）：哪些 chunk 欄位會進入 embedding 文字
-EMBEDDING_TEXT_FIELDS = ("section_title", "page_title", "content")
+EMBEDDING_TEXT_FIELDS = ("page_title", "section_title", "content")
 
 # 產生 embedding 向量時必須存在的 chunk 欄位（provenance 最低需求）
 REQUIRED_FIELDS = ("source_url", "chunk_id", "page_title", "section_title", "content")
@@ -112,6 +112,7 @@ def run_embedding(
 
     print(f"loading model {model_name} (revision={revision or 'latest'}, device={device or 'auto'})...")
     model = SentenceTransformer(model_name, revision=revision or None, device=device)
+    print(f"model loaded: device={model.device}, max_seq_length={model.max_seq_length}")
     print(f"encoding {len(texts)} texts (batch_size={batch_size}, normalize={NORMALIZE_EMBEDDINGS})...")
     vectors = model.encode(
         texts,

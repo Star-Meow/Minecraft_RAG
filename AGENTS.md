@@ -175,7 +175,7 @@ Pipeline invariants（跨階段不可破壞）：
 
 ### Embedding Input
 
-- Embedding 文字契約：chunk 的 `section_title` + `page_title` + `content`，以換行串接送入模型；`source_url`／`fetched_at`／`chunk_id` 不進入 embedding 文字（保留為 provenance／database 欄位）。
+- Embedding 文字契約：chunk 的 `page_title` + `section_title` + `content`，以換行串接送入模型；`source_url`／`fetched_at`／`chunk_id` 不進入 embedding 文字（保留為 provenance／database 欄位）。
 - 指定模型：`sentence-transformers/all-MiniLM-L6-v2`（本機執行），輸出向量正規化；distance metric 待決（正規化向量建議 cosine）。
 - 輸出 `data/embeddings.jsonl` 必須保留原始 chunk metadata；`source_url` + `chunk_id` 為複合鍵（`chunk_id` 為頁內編號，非全域唯一）。
 
