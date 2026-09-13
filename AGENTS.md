@@ -122,8 +122,8 @@ Agent 必須區分以下四類資訊來源：
 | --- | --- | --- | --- | --- |
 | Fetch | `sources.json` | `data/raw/<host>/<slug>.html`；`data/processed/<host>/<slug>.md`（含 YAML metadata） | 僅接受 `guide.appliedenergistics.org` 網域；逐頁處理、單頁失敗不阻斷其他頁；結束時統計成功／失敗／略過 | URL 不在白名單 → 拒絕；整體結束碼：全成功 0、有失敗 1 |
 | Chunk | `data/processed/*.md` | `data/chunks.jsonl` | frontmatter 六欄驗證 → 以 Markdown 標題優先分節 → 段落切分（目標 500–700 tokens、重疊 80–120 tokens） | 文件缺任一 metadata 欄位或缺 `source_url` → 整批中止、不產生部分輸出，exit 1 |
-| Index | `data/chunks.jsonl` | 本機 Chroma | Contract 與 Failure 於實作時定義並補入本表（實作狀態由 `recall.md` 管理） | 實作時補入本表 |
-| Query | 使用者問題 + Chroma | 附來源回答 | Contract 與 Failure 於實作時定義並補入本表（實作狀態由 `recall.md` 管理） | 實作時補入本表 |
+| Index | `data/chunks.jsonl` | 向量索引（PostgreSQL + pgvector） | Contract 與 Failure 於實作時定義並補入本表（實作狀態由 `recall.md` 管理） | 實作時補入本表 |
+| Query | 使用者問題 + 向量索引 | 附來源回答 | Contract 與 Failure 於實作時定義並補入本表（實作狀態由 `recall.md` 管理） | 實作時補入本表 |
 
 實作標示：Fetch 與 Chunk 為已實作階段；Index 與 Query（及 UI 層的 `app.py`）為預定階段，目前僅存在於契約層——不得為其虛構實作細節，實作狀態由 `recall.md` 管理。
 
@@ -175,8 +175,8 @@ Pipeline invariants（跨階段不可破壞）：
 
 ### Embedding Input
 
-- Embedding 文字契約：chunk 的 `page_title` + `section_title` + `content`，以換行串接送入模型。
-- 指定模型：`sentence-transformers/all-MiniLM-L6-v2`（本機執行），輸出向量正規化。
+- Embedding 文字契約：chunk 的 `section_title` + `page_title` + `content`，以換行串接送入模型；`source_url`／`fetched_at`／`chunk_id` 不進入 embedding 文字（保留為 provenance／database 欄位）。
+- 指定模型：`sentence-transformers/all-MiniLM-L6-v2`（本機執行），輸出向量正規化；distance metric 待決（正規化向量建議 cosine）。
 - 輸出 `data/embeddings.jsonl` 必須保留原始 chunk metadata；`source_url` + `chunk_id` 為複合鍵（`chunk_id` 為頁內編號，非全域唯一）。
 
 ## 8. Technical Constraints
@@ -185,7 +185,7 @@ Pipeline invariants（跨階段不可破壞）：
 
 - Python 3.9（新增程式碼須相容）。
 - 核心套件：requests + BeautifulSoup（擷取）；Markdown + YAML metadata（中間格式）。
-- 向量資料庫：Chroma（本機）。
+- 向量資料庫：PostgreSQL + pgvector（後續 Vector Database；由使用者指定，尚未建立）。
 - LLM provider：OpenAI（回答生成）。
 - Embedding model：`sentence-transformers/all-MiniLM-L6-v2`（本機執行，來源 Hugging Face）。
 - UI framework：Streamlit（最後階段）。

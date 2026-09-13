@@ -12,9 +12,14 @@ Pipeline 位置：chunks.jsonl → Embedding Model → Embedding Vectors（→ �
     python embed_chunks.py --batch-size 16    # 指定批次大小
 
 設計說明：
-    - Embedding 輸入契約（Option B）：page_title + section_title + content，
-      以換行串接。依據 onetime-report.md 檢索評審模擬，標題併入對歧義查詢
-      （基本系統 vs 自動合成、storage 同形異義）有正向助力（Inferred）。
+    - Embedding 輸入契約：section_title + page_title + content，
+      以換行串接（不含 source_url / fetched_at / chunk_id——保留為
+      provenance／database 欄位）。依據 onetime-report.md 檢索評審模擬，
+      標題併入對歧義查詢有正向助力（Inferred）。
+    - 輸出之向量未來交給 PostgreSQL + pgvector（distance metric 待決，
+      正規化向量建議 cosine；embedding 維度依模型文件為 384，需實測確認）。
+      模型快取於 Hugging Face 預設快取目錄（實際位置 UNKNOWN — REQUIRES
+      RUNTIME VERIFICATION）。
     - all-MiniLM-L6-v2 的 max_seq_length 為 256 wordpieces；超長 content 會被
       截斷。截斷的實際影響 UNKNOWN — REQUIRES RUNTIME VERIFICATION。
     - 輸出為整份覆寫（冪等）：每行 = 原 chunk 完整 metadata + embedding 向量
@@ -52,7 +57,7 @@ NORMALIZE_EMBEDDINGS = True  # all-MiniLM-L6-v2 為 cosine 相似度模型，慣
 DEVICE = None  # None = 交由 sentence-transformers 自動選擇（有 CUDA 用 GPU，否則 CPU）
 
 # Embedding 輸入契約（Option B）：哪些 chunk 欄位會進入 embedding 文字
-EMBEDDING_TEXT_FIELDS = ("page_title", "section_title", "content")
+EMBEDDING_TEXT_FIELDS = ("section_title", "page_title", "content")
 
 # 產生 embedding 向量時必須存在的 chunk 欄位（provenance 最低需求）
 REQUIRED_FIELDS = ("source_url", "chunk_id", "page_title", "section_title", "content")
