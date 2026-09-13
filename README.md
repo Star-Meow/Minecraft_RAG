@@ -47,7 +47,8 @@ Minecraft_RAG/
 ├── data/
 │   ├── raw/             # 原始 HTML：<host>/<slug>.html
 │   ├── processed/       # 清理後 Markdown：<host>/<slug>.md（含 YAML metadata）
-│   └── chunks.jsonl     # 切分產物（36 chunks）
+│   ├── chunks.jsonl     # 切分產物（32 chunks）
+│   └── embeddings.jsonl # embedding 向量（尚未產生）
 ├── skills/              # Codex 版 skill：project-limit、dev-environment
 └── .agents/skills/      # ZCode 版 skill：共 5 個（含 git-* 三個）
 ```
@@ -61,7 +62,8 @@ Minecraft_RAG/
 | `sources.json` | ✅ | 唯一的抓取入口：人工指定的官方頁面清單（目前 6 頁） |
 | `fetch_pages.py` | ✅ | 逐頁下載（網域白名單）→ 保存原始 HTML → 擷取主文轉 Markdown → 寫入 YAML metadata |
 | `chunk_pages.py` | ✅ | 解析 metadata → 依標題分節 → 依 token 目標切分（含重疊）→ 輸出 `data/chunks.jsonl` |
-| `index_chunks.py` | 未建立 | 讀取 chunks、計算 embedding、寫入本機 Chroma |
+| `embed_chunks.py` | ✅ 已建立（尚未執行） | 讀取 `chunks.jsonl`，以 all-MiniLM-L6-v2 產生正規化 embedding 向量（保留原始 metadata） |
+| `index_chunks.py` | 未建立 | 讀取 embedding 向量與 metadata，寫入本機 Chroma |
 | `query.py` | 未建立 | 依問題檢索 Top-K 段落，LLM 僅依檢索內容作答並附來源 |
 | `app.py` | 未建立 | Streamlit 問答介面 |
 
@@ -74,25 +76,39 @@ Minecraft_RAG/
 ## 使用與開發
 
 ```bash
-pip install -r requirements.txt   # 目前僅 requests、beautifulsoup4
+pip install -r requirements.txt   # requests、beautifulsoup4、sentence-transformers
 python fetch_pages.py             # 下載並轉檔 sources.json 中的頁面
 python chunk_pages.py             # 產生 data/chunks.jsonl
+python embed_chunks.py            # 產生 data/embeddings.jsonl（程式已備妥、尚未執行）
 ```
 
 - 執行環境：Python 3.9 以上。
 - **新增知識來源**：編輯 `sources.json`（URL 必須屬於官方指南網域），重跑上述兩步。
 - **調整切分粒度**：`chunk_pages.py` 頂部常數——`TARGET_TOKENS`（600）、`OVERLAP_TOKENS`（100）、`MIN_CHUNK_TOKENS`（40）。
-- **金鑰管理**：LLM／embedding 的 API key 一律透過 `.env` 讀取，不得寫入程式碼或版控（`index_chunks.py` 實作時導入）。
+- **Embedding**：指定模型 `sentence-transformers/all-MiniLM-L6-v2`（本機執行，不需要 API key）；首次執行 `embed_chunks.py` 時才會自 Hugging Face 下載模型。
+- **金鑰管理**：LLM 的 API key 一律透過 `.env` 讀取，不得寫入程式碼或版控（retrieval 實作時導入）。
 
 ## 開發里程碑
 
 | Phase | 目標 | 狀態 |
 | --- | --- | --- |
 | 1 | 產出並人工驗證乾淨 Markdown | ✅ 完成（6 頁） |
-| 2 | 擴增至 15～20 頁、切 chunks、建 Chroma 索引 | ◐ chunks 已完成（36 個）；索引未開始 |
+| 2 | 擴增至 15～20 頁、切 chunks、建 Chroma 索引 | ◐ chunks 已完成並通過品質檢查（32 個）；embedding 程式已備妥（未執行）；索引未開始 |
 | 3 | 以 5 個固定問題驗證 Top 3 檢索 | 未開始 |
 | 4 | 串接 LLM 生成附來源回答 | 未開始 |
 | 5 | Streamlit demo | 未開始 |
 | 6 | modpack 配方解析（SQLite） | 非 MVP |
+
+### 目前階段狀態
+
+```text
+Chunking: completed
+Chunk QA: completed
+Embedding model: configured（sentence-transformers/all-MiniLM-L6-v2）
+Embedding program: prepared（embed_chunks.py）
+Embedding execution: NOT RUN
+Vector index: NOT CREATED
+Retrieval evaluation: NOT STARTED
+```
 
 Phase 3–4 的驗收問題：最基本的 AE2 儲存系統如何建立？Inscriber 的用途是什麼？Crafting Pattern 與 Processing Pattern 有什麼差別？建立自動合成最少需要哪些方塊？ME 網路為什麼沒有電？

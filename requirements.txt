@@ -1,2 +1,3 @@
 requests>=2.31
 beautifulsoup4>=4.12
+sentence-transformers>=2.2.2

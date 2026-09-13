@@ -101,6 +101,7 @@ Agent 必須區分以下四類資訊來源：
 | `sources.json` | 知識來源入口 |
 | `fetch_pages.py` | 文件擷取 |
 | `chunk_pages.py` | 文件切分 |
+| `embed_chunks.py` | Embedding 產生（chunks → 向量） |
 | `index_chunks.py` | 向量索引 |
 | `query.py` | 檢索與回答 |
 | `app.py` | 使用者介面 |
@@ -111,7 +112,7 @@ Agent 必須區分以下四類資訊來源：
 
 不在此記錄「目前有幾個檔案、幾個 chunk、Phase 幾完成」等易變資訊。
 
-`fetch_pages.py` 與 `chunk_pages.py` 為已實作模組；`index_chunks.py`、`query.py`、`app.py` 為預定 pipeline 模組——上表描述的是契約職責，實作狀態由 `recall.md` 管理，不得因本表列出即假設這些程式目前存在。
+`fetch_pages.py`、`chunk_pages.py` 與 `embed_chunks.py` 為已實作模組（`embed_chunks.py` 僅完成程式與設定，尚未執行）；`index_chunks.py`、`query.py`、`app.py` 為預定 pipeline 模組——上表描述的是契約職責，實作狀態由 `recall.md` 管理，不得因本表列出即假設這些程式目前存在。
 
 ## 6. Pipeline Contract
 
@@ -172,6 +173,12 @@ Pipeline invariants（跨階段不可破壞）：
 - 不同版本**不得混用**；知識庫僅限 1.21.1。
 - Schema 變更屬 pipeline contract 變更：須經使用者授權（§16），且下游正式產物必須整批冪等重產生。
 
+### Embedding Input
+
+- Embedding 文字契約：chunk 的 `page_title` + `section_title` + `content`，以換行串接送入模型。
+- 指定模型：`sentence-transformers/all-MiniLM-L6-v2`（本機執行），輸出向量正規化。
+- 輸出 `data/embeddings.jsonl` 必須保留原始 chunk metadata；`source_url` + `chunk_id` 為複合鍵（`chunk_id` 為頁內編號，非全域唯一）。
+
 ## 8. Technical Constraints
 
 只放「不可擅自變更」的技術決策：
@@ -179,7 +186,8 @@ Pipeline invariants（跨階段不可破壞）：
 - Python 3.9（新增程式碼須相容）。
 - 核心套件：requests + BeautifulSoup（擷取）；Markdown + YAML metadata（中間格式）。
 - 向量資料庫：Chroma（本機）。
-- LLM provider：OpenAI（Embeddings 與 LLM）。
+- LLM provider：OpenAI（回答生成）。
+- Embedding model：`sentence-transformers/all-MiniLM-L6-v2`（本機執行，來源 Hugging Face）。
 - UI framework：Streamlit（最後階段）。
 - 不使用 LangChain（本專案採原生 Python 管線，與 LangChain 無關）。
 - API key 僅由 `.env` 提供。
