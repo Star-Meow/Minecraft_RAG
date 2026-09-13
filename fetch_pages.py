@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Comment, Tag
 
 # -------------------------------------------------------------------- 常數
 ALLOWED_DOMAIN = "guide.appliedenergistics.org"
@@ -44,6 +44,10 @@ YAML_KEYS = (
 
 # 這類元素通常是導覽、頁尾或側欄，不屬於文章主體，應予排除
 EXCLUDED_TAG_NAMES = {"nav", "footer", "aside", "script", "style"}
+
+# AE2 指南站放在 <main> 內的網站固定元件（logo 列與版本選擇器），
+# 不屬於指南本文，渲染前應予移除
+_SITE_CHROME_CLASSES = ("layout_topLogoBar", "layout_versionPicker")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SOURCES_PATH = PROJECT_ROOT / "sources.json"
@@ -153,6 +157,8 @@ def render_inline(node: Tag) -> str:
     """把節點內的內文節點（含連結、粗斜體、行內 code）轉成單一 Markdown 字串。"""
     parts: list[str] = []
     for child in node.children:
+        if isinstance(child, Comment):
+            continue  # React/Next.js 的 <!--$--> 標記註解不是可見內容
         if isinstance(child, str):
             parts.append(child)
             continue
@@ -245,7 +251,7 @@ def render_block(node: Tag) -> str:
         return f"```\n{code}\n```\n\n"
 
     if name == "blockquote":
-        inner = render_children(node)
+        inner = render_block_children(node)
         quoted = "\n".join(f"> {ln}" for ln in inner.split("\n") if ln.strip())
         return f"{quoted}\n\n" if quoted.strip() else ""
 
@@ -263,6 +269,8 @@ def render_block_children(parent: Tag) -> str:
     """把容器節點內的所有 block / inline 子元素串接成 Markdown。"""
     out: list[str] = []
     for child in parent.children:
+        if isinstance(child, Comment):
+            continue  # 註解節點不是可見內容
         if isinstance(child, str):
             text = " ".join(child.split())
             if text:
@@ -273,6 +281,10 @@ def render_block_children(parent: Tag) -> str:
         if child.name.lower() in EXCLUDED_TAG_NAMES:
             continue
         if child.name.lower() in _BLOCK_NAMES:
+            out.append(render_block(child))
+        elif child.find(list(_BLOCK_NAMES)):
+            # 容器內含 block 級子結構（如包住 h2/ul 的 div、<article>），
+            # 必須遞迴以保留文件語意；否則 headings/清單會被內聯壓平
             out.append(render_block(child))
         else:
             text = render_inline(child).strip()
@@ -297,6 +309,14 @@ def render_table(node: Tag) -> str:
     return "\n".join(out) + "\n\n"
 
 
+def _is_site_chrome(tag: Tag) -> bool:
+    """比對 tag 的 class 是否屬於網站固定元件（部分符合即算）。"""
+    classes = tag.get("class") or []
+    if isinstance(classes, str):
+        classes = [classes]
+    return any(cls in c for c in classes for cls in _SITE_CHROME_CLASSES)
+
+
 def to_markdown(soup: BeautifulSoup) -> str:
     """從已取出的主文節點序列化為 Markdown 正文。"""
     main = find_main_content(soup)
@@ -308,6 +328,9 @@ def to_markdown(soup: BeautifulSoup) -> str:
         main = body
     # 於副本中移除導覽類元素，避免寫入導覽列
     for bad in list(main.find_all(EXCLUDED_TAG_NAMES)):
+        bad.decompose()
+    # 移除 <main> 內的網站固定元件（logo 列、版本選擇器）
+    for bad in list(main.find_all(_is_site_chrome)):
         bad.decompose()
     return render_block(main).strip() + "\n"
 # -------------------------------------------------------------------- 下載與檔案

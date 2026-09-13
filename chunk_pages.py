@@ -100,15 +100,20 @@ def estimate_tokens(text: str) -> int:
 
 
 def split_long_text(text: str) -> list[str]:
-    """依段落組出目標大小，並讓相鄰 chunk 共享重疊內容。"""
+    """將文本裝箱成目標大小的 chunk，並讓相鄰 chunk 帶有限、對齊句界的重疊。
+
+    裝箱單位為段落；超過目標長度的段落先以句界預切成不重疊片段
+    （邊界對齊句子或詞，避免字中切斷）。相鄰 chunk 的重疊只回收上一個
+    chunk 尾端、總長不超過 overlap_chars 的完整單位；單位過大或已覆蓋
+    整個 chunk 時直接不帶重疊，避免子集包含與內容重複。
+    """
     target_chars = TARGET_TOKENS * CHARS_PER_TOKEN
     overlap_chars = OVERLAP_TOKENS * CHARS_PER_TOKEN
-    source_paragraphs = normalize_content(text)
-    paragraphs: list[str] = []
 
-    for source_paragraph in source_paragraphs:
+    units: list[str] = []
+    for source_paragraph in normalize_content(text):
         if len(source_paragraph) <= target_chars:
-            paragraphs.append(source_paragraph)
+            units.append(source_paragraph)
             continue
 
         start = 0
@@ -117,47 +122,35 @@ def split_long_text(text: str) -> list[str]:
             if end < len(source_paragraph):
                 boundary = source_paragraph.rfind(". ", start, end)
                 if boundary > start:
-                    end = boundary + 1
-            paragraphs.append(" ".join(source_paragraph[start:end].split()))
-            if end >= len(source_paragraph):
-                break
-            start = max(end - overlap_chars, start + 1)
+                    end = min(boundary + 2, len(source_paragraph))  # 含句點與其後空格
+                else:
+                    space = source_paragraph.rfind(" ", start, end)  # 無句界時對齊詞邊
+                    if space > start:
+                        end = space
+            units.append(" ".join(source_paragraph[start:end].split()))
+            start = end
 
     chunks: list[str] = []
     current_parts: list[str] = []
     current_length = 0
 
-    for paragraph in paragraphs:
-        paragraph_length = len(paragraph)
-        if current_parts and current_length + paragraph_length + 1 > target_chars:
+    for unit in units:
+        if current_parts and current_length + len(unit) + 2 > target_chars:
             chunks.append("\n\n".join(current_parts))
-            overlap_parts: list[str] = []
-            overlap_length = 0
+            tail_parts: list[str] = []
+            tail_length = 0
             for part in reversed(current_parts):
-                if overlap_length >= overlap_chars:
+                if tail_length + len(part) + 2 > overlap_chars:
                     break
-                overlap_parts.insert(0, part)
-                overlap_length += len(part) + 2
-            current_parts = overlap_parts.copy()
-            current_length = sum(len(part) + 2 for part in current_parts)
+                tail_parts.insert(0, part)
+                tail_length += len(part) + 2
+            if not tail_parts or tail_length >= current_length:
+                current_parts, current_length = [], 0
+            else:
+                current_parts, current_length = tail_parts, tail_length
 
-        if not current_parts:
-            current_parts.append(paragraph)
-            current_length = paragraph_length
-        elif current_length + paragraph_length + 2 <= target_chars:
-            current_parts.append(paragraph)
-            current_length += paragraph_length + 2
-        else:
-            chunks.append("\n\n".join(current_parts))
-            overlap_parts: list[str] = []
-            overlap_length = 0
-            for part in reversed(current_parts):
-                if overlap_length >= overlap_chars:
-                    break
-                overlap_parts.insert(0, part)
-                overlap_length += len(part) + 2
-            current_parts = [*overlap_parts, paragraph]
-            current_length = sum(len(part) + 2 for part in current_parts) - 2
+        current_parts.append(unit)
+        current_length += len(unit) + (2 if len(current_parts) > 1 else 0)
 
     if current_parts:
         chunks.append("\n\n".join(current_parts))
