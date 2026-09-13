@@ -1,173 +1,98 @@
 # Minecraft AE2 RAG Assistant
 
-> 針對 Minecraft 1.21.1 與 Applied Energistics 2（AE2）的知識問答 RAG 助手。
+針對 Minecraft 1.21.1 與 Applied Energistics 2（AE2）的知識問答 RAG 助手：只依據 AE2 官方 1.21.1 指南回答問題，每個答案附可點擊的來源連結；官方文件不足以回答時，明確回覆「無法確認」，不猜測、不補完。
 
----
+## 專案目的
 
-## 1. 專案簡介
+AE2 的玩法知識（ME 儲存、頻道、能源、自動合成等）散落在官方指南的數十個頁面中，查詢成本高。本專案將指定頁面整理成可檢索的知識庫，以檢索增強生成（RAG）提供有據可查的問答服務。
 
-本專案建立一個 **RAG（Retrieval-Augmented Generation）問答助手**，目標是回答關於 Minecraft 1.21.1 與 Applied Energistics 2（AE2）的知識問題，涵蓋概念說明、使用流程與自動合成等主題。
+三條核心原則：
 
-設計原則：
+1. **來源限定**——只使用 `guide.appliedenergistics.org` 的 1.21.1 官方頁面，不混用其他版本或非官方資料。
+2. **答案附來源**——每個回答標註出自哪個頁面與章節。
+3. **不足則明說**——檢索不到依據時承認無法確認。
 
-- **第一版只以 AE2 官方 1.21.1 線上指南作為資料來源**，不宣稱能查核特定模組包的客製配方。
-- 所有回答皆以**官方文件**為依據，並於每個答案附上可點擊的來源連結。
-- 當官方文件資料不足時，系統**必須明確表示無法確認**，不得補完或猜測。
+## 整體架構
 
----
-
-## 2. MVP 範圍
-
-**MVP（Minimum Viable Product，最小可行產品）** 僅涵蓋下列範圍：
-
-- **資料來源**：AE2 官方 1.21.1 Guide。
-- **頁面數量**：初期僅處理人工指定的 15～20 個官方頁面，**不進行全站自動爬取**。
-- **功能流程**：文件擷取 → Markdown 清理 → chunking → embedding → Chroma 檢索 → 附來源回答。
-
-**不在 MVP 範圍內**：
-
-- Minecraft 模組包 JAR 解析
-- KubeJS／CraftTweaker 覆寫解析
-- 多模組支援
-- 帳號系統
-- 雲端部署
-- 多 Agent
-
----
-
-## 3. 預定技術棧
-
-本專案規劃使用的技術如下：
-
-| 用途 | 技術 |
-| --- | --- |
-| 語言 | Python |
-| 網頁下載與擷取 | `requests` + BeautifulSoup |
-| 中間文件格式 | Markdown + YAML metadata |
-| 本機向量資料庫 | Chroma |
-| 向量化 | OpenAI Embeddings |
-| 回答生成 | OpenAI LLM（僅依據檢索內容生成） |
-| 展示介面 | Streamlit（最後階段） |
-
-**重要決定**：初期**不使用 LangChain**，先理解底層資料流程，再依需要引入較高層級的抽象。
-
----
-
-## 4. 資料流程
-
-使用 Mermaid 流程圖說明整體資料流向：
+資料以單向管線流動：每個階段讀取上游檔案、寫入自己的產物，可獨立重跑。
 
 ```mermaid
 flowchart LR
-    A[AE2 官方指定頁面] --> B[fetch_pages.py]
-    B --> C[data/raw/ 原始 HTML]
-    C --> D[data/processed/ 清理後 Markdown]
-    D --> E[chunk_pages.py]
-    E --> F[data/chunks.jsonl]
-    F --> G[index_chunks.py]
-    G --> H[本機 Chroma]
-    H --> I[query.py]
-    I --> J[檢索到的段落]
-    J --> K[LLM 依據段落回答並列出來源]
+    A["sources.json<br>人工指定的官方頁面"] --> B["fetch_pages.py<br>下載 + 轉 Markdown"]
+    B --> C["data/raw/<br>原始 HTML"]
+    B --> D["data/processed/<br>Markdown + YAML metadata"]
+    D --> E["chunk_pages.py<br>標題分節 + token 切分"]
+    E --> F["data/chunks.jsonl"]
+    F --> G["index_chunks.py<br>embedding + Chroma"]
+    G --> H["query.py<br>檢索 + LLM 附來源回答"]
+    H --> I["app.py<br>Streamlit 介面"]
 ```
 
-文字說明：
+已實作：`fetch_pages.py`、`chunk_pages.py` 與資料產物；索引、查詢、介面為後續階段。
 
-1. **擷取**：`fetch_pages.py` 下載 AE2 官方指定網頁，儲存原始 HTML 至 `data/raw/`。
-2. **清理**：移除雜訊並轉為 Markdown，儲存至 `data/processed/`。
-3. **切分**：`chunk_pages.py` 將 Markdown 切成 chunks，輸出至 `data/chunks.jsonl`。
-4. **索引**：`index_chunks.py` 計算 embedding 並寫入本機 Chroma。
-5. **檢索與回答**：`query.py` 依使用者問題檢索最相關段落，交由 LLM 依據段落回答並列出來源。
-
----
-
-## 5. 預定目錄結構
+## 目錄結構
 
 ```text
 Minecraft_RAG/
-├── README.md
-├── fetch_pages.py      # 已存在（尚未實作）
-├── chunk_pages.py      # 尚未建立（預定）
-├── index_chunks.py     # 尚未建立（預定）
-├── query.py            # 尚未建立（預定）
-├── app.py              # 尚未建立（預定）
-├── requirements.txt    # 尚未建立（預定）
-├── .env.example        # 尚未建立（預定）
+├── README.md            # 專案架構與使用說明（人類讀者）
+├── AGENTS.md            # AI Agent 的專案架構基準
+├── analysis-summary.md  # 專案總結分析（2026-09-13）
+├── sources.json         # 官方頁面來源清單（知識庫唯一入口）
+├── fetch_pages.py       # 擷取：下載頁面、HTML → Markdown
+├── chunk_pages.py       # 切分：標題分節、token 切分
+├── requirements.txt     # Python 依賴（requests、beautifulsoup4）
+├── index_chunks.py      # （未建立）embedding + Chroma
+├── query.py             # （未建立）檢索 + LLM 附來源回答
+├── app.py               # （未建立）Streamlit 介面
 ├── data/
-│   ├── raw/            # 尚未建立（預定）
-│   ├── processed/      # 尚未建立（預定）
-│   └── chunks.jsonl    # 尚未建立（預定）
-└── tests/              # 尚未建立（預定）
+│   ├── raw/             # 原始 HTML：<host>/<slug>.html
+│   ├── processed/       # 清理後 Markdown：<host>/<slug>.md（含 YAML metadata）
+│   └── chunks.jsonl     # 切分產物（36 chunks）
+├── skills/              # Codex 版 skill：project-limit、dev-environment
+└── .agents/skills/      # ZCode 版 skill：共 5 個（含 git-* 三個）
 ```
 
-> 標註說明：目前實際存在的僅有 `README.md` 與 `fetch_pages.py`（尚未實作）。其餘檔案與資料夾皆為後續才會建立的預定專案。
+`recall.md`、`read.md` 為本機協作文件，不入版控。
 
----
+## 主要模組與職責
 
-## 6. 文件與 chunk 規範
+| 模組 | 狀態 | 職責 |
+| --- | --- | --- |
+| `sources.json` | ✅ | 唯一的抓取入口：人工指定的官方頁面清單（目前 6 頁） |
+| `fetch_pages.py` | ✅ | 逐頁下載（網域白名單）→ 保存原始 HTML → 擷取主文轉 Markdown → 寫入 YAML metadata |
+| `chunk_pages.py` | ✅ | 解析 metadata → 依標題分節 → 依 token 目標切分（含重疊）→ 輸出 `data/chunks.jsonl` |
+| `index_chunks.py` | 未建立 | 讀取 chunks、計算 embedding、寫入本機 Chroma |
+| `query.py` | 未建立 | 依問題檢索 Top-K 段落，LLM 僅依檢索內容作答並附來源 |
+| `app.py` | 未建立 | Streamlit 問答介面 |
 
-- 每份 Markdown 必須帶有 YAML metadata，包含以下欄位：
-  - `title`
-  - `source_url`
-  - `minecraft_version`
-  - `mod`
-  - `source_type`
-  - `fetched_at`
-- 固定使用以下數值：
-  - `minecraft_version: "1.21.1"`
-  - `mod: "Applied Energistics 2"`
-- 以 **Markdown 標題優先切分**。
-- chunk 長度約 **500～700 tokens**，重疊約 **80～120 tokens**。
-- 每個 chunk 必須保留：頁面 URL、頁名、章節標題與版本資訊。
-- **不可將沒有來源 URL 的文字納入正式知識庫。**
+## 模組之間的關係
 
----
+- **單向依賴**：下游只消費上游的檔案產物，不回頭修改；任一階段可單獨重跑，產物冪等（整份覆寫重產生）。
+- **metadata 貫穿全鏈**：每頁的標題、來源 URL、版本資訊由 fetch 寫入、chunk 繼承到每個段落，最終供 query 產生來源連結。
+- **知識庫單一入口**：只有 `sources.json` 指定的頁面會進入知識庫；缺來源 URL 的內容會被 chunk 階段拒絕。
 
-## 7. 回答品質與 RAG 規範
+## 使用與開發
 
-- LLM **只能依據檢索到的 chunk 作答**，不得使用檢索範圍外的知識補字。
-- 每個答案需附**可點擊的來源網址**。
-- 當資訊不足時，回答 **「目前官方文件不足以確認」**，不得補完或猜測。
-- **不可混用非 1.21.1 版本的 AE2 文件。**
-- 除錯時**先檢索品質、再調整 chunking**；不要因為答案錯誤就直接換模型。
+```bash
+pip install -r requirements.txt   # 目前僅 requests、beautifulsoup4
+python fetch_pages.py             # 下載並轉檔 sources.json 中的頁面
+python chunk_pages.py             # 產生 data/chunks.jsonl
+```
 
----
+- 執行環境：Python 3.9 以上。
+- **新增知識來源**：編輯 `sources.json`（URL 必須屬於官方指南網域），重跑上述兩步。
+- **調整切分粒度**：`chunk_pages.py` 頂部常數——`TARGET_TOKENS`（600）、`OVERLAP_TOKENS`（100）、`MIN_CHUNK_TOKENS`（40）。
+- **金鑰管理**：LLM／embedding 的 API key 一律透過 `.env` 讀取，不得寫入程式碼或版控（`index_chunks.py` 實作時導入）。
 
-## 8. 開發里程碑
+## 開發里程碑
 
-| Phase | 目標 |
-| --- | --- |
-| **Phase 1** | 指定 3 個官方頁面，產出並人工驗證乾淨 Markdown。 |
-| **Phase 2** | 擴增到 15～20 頁，切成 chunks 並建立 Chroma 索引。 |
-| **Phase 3** | 用 5 個固定問題驗證 Top 3 檢索結果。 |
-| **Phase 4** | 串接 LLM，生成附來源的回答。 |
-| **Phase 5** | 建立 Streamlit demo。 |
-| **Phase 6（非 MVP）** | 加入本地 modpack 配方解析，並以 SQLite 做精確配方查詢。 |
+| Phase | 目標 | 狀態 |
+| --- | --- | --- |
+| 1 | 產出並人工驗證乾淨 Markdown | ✅ 完成（6 頁） |
+| 2 | 擴增至 15～20 頁、切 chunks、建 Chroma 索引 | ◐ chunks 已完成（36 個）；索引未開始 |
+| 3 | 以 5 個固定問題驗證 Top 3 檢索 | 未開始 |
+| 4 | 串接 LLM 生成附來源回答 | 未開始 |
+| 5 | Streamlit demo | 未開始 |
+| 6 | modpack 配方解析（SQLite） | 非 MVP |
 
----
-
-## 9. 初始驗收問題
-
-下列問題作為 Phase 3 與 Phase 4 的驗收依據：
-
-1. 最基本的 AE2 儲存系統如何建立？
-2. Inscriber 的用途是什麼？
-3. Crafting Pattern 與 Processing Pattern 有什麼差別？
-4. 建立自動合成最少需要哪些方塊？
-5. ME 網路為什麼沒有電？
-
----
-
-## 10. 給 AI 協作者的工作規範
-
-- 每次修改前先閱讀 README 與現有檔案。
-- 保持每個程式檔案**職責單一**。
-- 先建立**可執行的最小版本**，再擴充功能。
-- 新增依賴前必須在 README 說明用途。
-- **不得在程式碼中寫入 API Key**；只從 `.env` 讀取。
-- 所有可重複產生的資料都不得提交敏感資訊。
-- 所有資料處理步驟應**可重複執行**。
-- 重要函式應有**型別標註**與清楚的錯誤訊息。
-- 程式完成後，應提供**可執行的驗證方式**。
-- **程式碼模組化**：構築程式時盡量將程式碼拆成模組化結構；除非有需要，否則**禁止大範圍重構**。
-- 應**盡可能遵循既有程式碼風格**，保持一致性。
+Phase 3–4 的驗收問題：最基本的 AE2 儲存系統如何建立？Inscriber 的用途是什麼？Crafting Pattern 與 Processing Pattern 有什麼差別？建立自動合成最少需要哪些方塊？ME 網路為什麼沒有電？
