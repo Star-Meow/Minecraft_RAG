@@ -23,7 +23,7 @@ Agent 不得擅自決定下列資訊，必須逐一以提問方式向使用者�
 
 1. **Repo 名稱**：本地資料夾或遠端 repo 的名稱。
 2. **Remote 設定**：是否要連到遠端（例如 GitHub），以及遠端 URL；若只要本地追蹤，明確確認「僅本地」。
-3. **權限／可見性**：遠端 repo 要設為 private 或 public（若適用）。
+3. **權限／可見性**：遠端 repo 一律設定為私人（private）；僅在使用者明確要求公開時才可設為 public。
 4. **認證方式**：由使用者決定如何提供 GitHub credential（例如 OAuth / gh CLI / PAT token）。永不要求、輸出或儲存任何 token、密碼或私鑰。
 
 提問時同時說明每項選擇的影響，並依使用者回答的最小範圍執行。
@@ -39,7 +39,7 @@ Agent 不得擅自決定下列資訊，必須逐一以提問方式向使用者�
 
 可自動執行（在使用者確認後）：`git init`、建立初始 commit、`git remote add`、把允許的分支 push 到使用者指定的 remote。
 
-不得自行執行：未經詢問即建立遠端 repo、幫使用者選擇權限或認證方式、`git push` 至使用者未指定的位置、`git merge`。
+不得自行執行：未經詢問即建立遠端 repo、將 repo 設為 public、幫使用者選擇認證方式、`git push` 至使用者未指定的位置、`git merge`。
 
 ## 完成回報
 
