@@ -1,11 +1,16 @@
 __pycache__/
 *.pyc
+.venv/
+venv/
 .env
 .env.*
 
 .codex/
+.zcode/
 read.md
 recall.md
 gcm-diagnose.log
 REVIEW.md
 onetime-report.md
+project-limit-skill-summary.txt
+codex.ps1

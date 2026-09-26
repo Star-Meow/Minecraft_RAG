@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minecraft-ae2-rag-assistant"
+version = "0.1.0"
+description = "RAG assistant for the Applied Energistics 2 official Minecraft 1.21.1 guide"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment",
+    "Intended Audience :: Developers",
+]
+
+[project.optional-dependencies]
+# torch 不在此列：它是 sentence-transformers 的傳遞依賴，且 Windows 上 PyPI 的
+# torch 為 CPU-only build。GPU 環境須先以 cu130 index 手動安裝（見 README 安裝段）。
+pipeline = [
+    "requests>=2.34.2",
+    "beautifulsoup4>=4.15.0",
+    "python-slugify>=9.1.1",
+    "trafilatura>=2.2.0",
+    "langchain-text-splitters>=1.1.2",
+    "sentence-transformers>=6.1.0",
+]
+
+[tool.setuptools]
+packages = []
+
+[tool.setuptools.package-data]
