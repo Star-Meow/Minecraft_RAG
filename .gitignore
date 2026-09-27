@@ -5,6 +5,18 @@ venv/
 .env
 .env.*
 
+# [3] 人類可讀衍生物（真值為 extracted JSON，此目錄可由 [3] 重產）
+data/processed/extracted_readable/
+
+# pipeline 產物：各階段可整份重產，不入版控（目錄骨架由 .gitkeep 保留）
+data/raw/
+data/processed/extracted/
+data/processed/cleaned/
+data/processed/chunks/
+data/processed/embeddings/
+reports/extraction_report.md
+reports/cleaning_report.md
+
 .codex/
 .zcode/
 read.md

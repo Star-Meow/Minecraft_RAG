@@ -88,7 +88,8 @@ Agent 必須區分以下四類資訊來源：
 
 | Path | Responsibility |
 | --- | --- |
-| `sources.json` | [1] 知識來源入口：`version` + `mod`（原名）+ `entry_url` + `exclude`／`include`；**整條 URL 鏈的起點**（逐頁 URL 由 [2] 從 `entry_url` 解析側邊欄導覽產生） |
+| `sources.json` | [1] 知識來源入口：`version` + `mod`（原名）+ `entry_url` + `exclude`／`include`；**整條 URL 鏈的起點**（`version` 由本檔欄位給定，`entry_url` 推導站台根；逐頁 URL 由 [2] 解析 **sitemap.xml** 產生，見 `docs/adr/ADR-001`） |
+| `docs/adr/` | Architecture Decision Records（[2] URL 真值來源等架構決策） |
 | `src/fetch_pages.py` | [2] 抓取 raw HTML（只做網路 I/O） |
 | `src/extract_pages.py` | [3] 抽取主文（trafilatura） |
 | `src/clean_pages.py` | [4] 清理與結構化（噪音規則待定） |
@@ -112,9 +113,9 @@ pipeline 模組一律置於 `src/`；模組內以 `PROJECT_ROOT = Path(__file__)
 
 | Stage | Input | Output | Contract | Failure |
 | --- | --- | --- | --- | --- |
-| [1] 入口 | 人工維護 | `sources.json` | `version` + `mod`（模組原名）+ `entry_url` + `exclude`／`include`；入口頁僅作導航來源，不抓取 | 格式不符 → 拒絕 |
-| [2] 抓取 | `sources.json` | `data/raw/<version>/<mod_slug>/<chapter>/*.html`；`data/raw/_manifest.json` | 只做網路 I/O，不做 HTML→MD；逐頁抓取間隔 0.5 秒；`mod` 經 `python-slugify` 轉 `mod_slug`，`chapter`／`page_slug` 由 URL 解析（chapter 為去版本前綴之倒數第二段，無 chapter 頁歸 `other`）；記錄 `http_status` 與 `local_path` | 不重試；`http_status` 非 2xx 或 `local_path: null` → 記錄於 manifest，人工查驗後重跑 |
-| [3] 抽取 | `data/raw/<version>/<mod_slug>/<chapter>/*.html` + `_manifest.json` | `data/processed/extracted/<version>/<mod_slug>/<chapter>/*.json`；`reports/extraction_report.md` | trafilatura 抽取主文；逐頁 `http_status` + `text` 空值判斷；**`title` 保留不異動**（[4] 帶入 cleaned MD H1）；**不加 `page_slug`／`chapter` 欄位**（[5] 從路徑讀）；整份覆寫 | 缺 `http_status` 或 `text` 為空 → 報告標記，不中斷其他頁 |
+| [1] 入口 | 人工維護 | `sources.json` | `version` + `mod`（模組原名）+ `entry_url` + `exclude`／`include`；入口頁僅推導站台根（版本取自 `version` 欄位，不由入口頁推導），不抓取 | 格式不符 → 拒絕 |
+| [2] 抓取 | `sources.json`（站台根與版本）+ `sitemap.xml` | `data/raw/<version>/<mod_slug>/<chapter>/*.html`；`data/raw/_manifest.json` | 只做網路 I/O，不做 HTML→MD、**不解析導覽 DOM**；**URL 真值來源為 sitemap.xml**（`robots.txt` 的 `Sitemap:` 宣告為主，慣例路徑為輔；HTTP 200 且根節點為 `<urlset>`／`<sitemapindex>`；無可用 sitemap → fail-fast，不 fallback；見 `docs/adr/ADR-001`）；版本過濾 `path.startswith(f"/{version}/")`（帶尾斜槓）並排除入口頁；逐頁抓取間隔 0.5 秒；`mod` 經 `python-slugify` 轉 `mod_slug`，`chapter`／`page_slug` 由 URL 解析（chapter 為去版本前綴之倒數第二段，無 chapter 頁歸 `other`）；記錄 `http_status` 與 `local_path` | 不重試；`http_status` 非 2xx 或 `local_path: null` → 記錄於 manifest，人工查驗後重跑；無可用 sitemap → 中止、exit 1 |
+| [3] 抽取 | `data/raw/<version>/<mod_slug>/<chapter>/*.html` + `_manifest.json` | `data/processed/extracted/<version>/<mod_slug>/<chapter>/*.json`；`data/processed/extracted/_parse_report.json`；`reports/extraction_report.md`；**另產出 `data/processed/extracted_readable/**/*.md` 與 `_index.md`（人類驗收用，真值以 JSON 為準，寫入失敗僅記 warning）** | trafilatura 抽取主文；逐頁 `http_status` + `text` 空值判斷；**navigation_only 頁跳過不輸出**（規則一 `url_ends_with_index`：URL path 以 `-index` 結尾；規則二 `short_text_high_link_density`：文字長度 < 200 且**僅 `<article>` 範圍**連結密度 > 0.5；兩規則 reason 字串相異；預期 3 頁 `*-index` 命中）；**`title` 保留不異動**（[4] 帶入 cleaned MD H1）；**`hostname` 保留 trafilatura 原值不修正**；**不加 `page_slug`／`chapter` 欄位**（[5] 從路徑讀）；整份覆寫 | 缺 `http_status` 或 `text` 為空 → 報告標記，不中斷其他頁；.md 衍生物寫入失敗 → 僅記 warning，不影響 exit code |
 | [4] 清理 | `data/processed/extracted/<version>/<mod_slug>/<chapter>/*.json` | `data/processed/cleaned/<version>/<mod_slug>/<chapter>/*.md`；`reports/cleaning_report.md` | 過濾 trafilatura 誤留噪音，輸出**含 frontmatter** 之乾淨 MD（frontmatter 至少含 `title`、`source_url`，其後為 `# <title>` + 正文；其餘 metadata 的權威來源為路徑）；**噪音規則待第一波資料後確認**（本階段不預先定義） | 規則未定義前以最小過濾跑通為主 |
 | [5] 切分 | `data/processed/cleaned/<version>/<mod_slug>/<chapter>/*.md` | `data/processed/chunks/chunks.jsonl` | **只讀 cleaned MD**（不讀 extracted／manifest）；`mod_slug`／`chapter`／`page_slug`／`version` 從路徑四層讀，`title`／`source_url` 從 frontmatter 讀（H1 供 MarkdownHeaderTextSplitter 當結構，非 title 來源）；MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter；`chunk_size` 200、`chunk_overlap` 40–50；**MiniLM 真 tokenizer**；**切分後斷言每 chunk ≤ 254 wordpieces**；若 frontmatter 的 `source_url` 為空，中止該頁處理並報錯（不產出該頁 chunk，符合 §3.1「無來源 URL 的內容不得進入知識庫」） | 超出 254 wordpieces → 中止、exit 1 |
 | [6] Embedding | `data/processed/chunks/chunks.jsonl` | `data/processed/embeddings/embeddings.jsonl` | embedding 輸入 `{mod} \| {page} \| {section}\n\n{text}`；MiniLM 正規化 encode；**revision 鎖定**並記錄於輸出；整份覆寫 | 輸入缺欄位 → 中止、exit 1 |
@@ -139,10 +140,10 @@ Pipeline invariants（跨階段不可破壞）：
 | `version` | string | Minecraft 版本，固定 `"1.21.1"`；決定目錄分層 `<version>/<mod_slug>/<chapter>/` |
 | `mod` | string | 模組**原名**（`"Applied Energistics 2"`），**不 slug 化**；[2] 以 `python-slugify` 轉為 `mod_slug` 寫入路徑 |
 | `entry_url` | string | 入口頁 URL，**僅作導航來源，不作為抓取目標** |
-| `exclude` | array | 排除的 URL |
-| `include` | array | 額外納入的 URL |
+| `exclude` | array | 排除的 URL；**[2] 目前未讀取**（sitemap 時代改由版本過濾決定範圍，保留欄位待日後需要） |
+| `include` | array | 額外納入的 URL；**[2] 目前未讀取**（同上） |
 
-**廢棄舊形式**：本檔不再是逐頁人工清單；抓取範圍改由入口頁側邊欄導覽決定。
+**廢棄舊形式**：本檔不再是逐頁人工清單；抓取範圍由 **sitemap.xml** 決定（`version` 由本檔欄位給定，`entry_url` 僅推導站台根，見 `docs/adr/ADR-001`）。`exclude`／`include` 欄位保留於 schema，但 [2] 目前**未讀取**（見 §7 欄位表）。
 
 ### Extracted JSON（[3]，trafilatura 輸出）
 
@@ -178,7 +179,7 @@ Pipeline invariants（跨階段不可破壞）：
   - `section` ← MarkdownHeaderTextSplitter 的頁內標題。
 - **權威來源分離**：結構性 metadata（`version`／`mod`／`chapter`／`page`）權威來源為**目錄路徑**，frontmatter 對應欄位 [5] 不讀（僅供人類閱讀）；內容性 metadata（`title`／`source_url`）由 **frontmatter 承載**（路徑推不出）。frontmatter 與 H1 的 `title` 由 [4] 保證一致；若不一致，以 frontmatter 為準。
 - **frontmatter 欄位範圍**：frontmatter 至少含 `title`、`source_url`（可含其他欄位供人類閱讀）；`fetched_at` 只留 `_manifest.json`，不進 frontmatter。
-- **`source_url` 傳遞**：值為 extracted JSON 的 `source`（trafilatura 從 HTML 抽出），由 [4] 寫入 cleaned MD frontmatter，[5] 讀 frontmatter；鏈路起點為 `sources.json`（`entry_url` → [2] 解析側邊欄導覽產生逐頁 URL → [3] trafilatura 抽取）。`_manifest.json` 的 `url` 是「實際抓取的 URL」，`source_url` 取值以 trafilatura 的 `source` 為準。
+- **`source_url` 傳遞**：值為 extracted JSON 的 `source`（trafilatura 從 HTML 抽出），由 [4] 寫入 cleaned MD frontmatter，[5] 讀 frontmatter；鏈路起點為 `sources.json`（`version` 欄位 + `entry_url` 推導站台根 → [2] 解析 sitemap.xml 產生逐頁 URL → [3] trafilatura 抽取）。`_manifest.json` 的 `url` 是「實際抓取的 URL」，`source_url` 取值以 trafilatura 的 `source` 為準。
 - **slug 只用於路徑與命名**：資料夾名稱、檔名、`chunk_id` 與 `mod`／`chapter`／`page` 欄位使用 slug；`text`、`title`、`section` 等內容欄位**禁止 slug 化**。
 - **版本資訊**由目錄路徑 `<version>/<mod_slug>/<chapter>/` 承載，不另存 chunk 欄位。
 - **已知風險（延後處理）**：`chunk_id` 不含 `chapter`，跨 chapter 同名 page 會碰撞；碰撞發生時在方案 A（`seq` 全域遞增）與方案 B（`chapter` 入 ID）間擇一。
@@ -208,8 +209,8 @@ Pipeline invariants（跨階段不可破壞）：
 
 - Python 3.12（新增程式碼須相容）。
 - torch：GPU build 由 cu130 index 安裝（`sentence-transformers` 的傳遞依賴，不另列於 `requirements.txt`；Windows 上 PyPI 預設為 CPU-only build）。
-- [2] 抓取：requests + BeautifulSoup（解析側邊欄導覽）；`python-slugify`（`mod` 原名 → `mod_slug`，**只用於路徑與命名**，不用於內容）。
-- [3] 抽取：trafilatura（`output_format="json"`, `with_metadata=True`, `include_tables=True`）。
+- [2] 抓取：requests + `xml.etree.ElementTree`（**sitemap.xml 為 URL 真值來源**，無新依賴）；`python-slugify`（`mod` 原名 → `mod_slug`，**只用於路徑與命名**，不用於內容）。**不使用 BeautifulSoup 做導覽發現**（見 `docs/adr/ADR-001`）。
+- [3] 抽取：trafilatura（`output_format="json"`, `with_metadata=True`, `include_tables=True`，**自行解析 raw HTML**，直接吃字串、不經 BeautifulSoup 預處理）；BeautifulSoup 只在 navigation_only 判定中用於**計算 `<article>` 範圍的連結密度**，不用於導覽發現，也不是 trafilatura 的前置解析器。
 - [5] 切分：`MarkdownHeaderTextSplitter` + `RecursiveCharacterTextSplitter`（langchain-text-splitters）；tokenizer 為 MiniLM 真 tokenizer；`chunk_size` 200、`chunk_overlap` 40–50；**每 chunk ≤ 254 wordpieces 斷言**。
 - Embedding model：`sentence-transformers/all-MiniLM-L6-v2`（**本機執行**，384 維、正規化、`max_seq_length` 256 wordpieces）；**revision 鎖定**。
 - 向量資料庫：PostgreSQL + pgvector（[7]，schema 待 [1]–[6] 跑通後定義）。
@@ -316,7 +317,7 @@ Agent 不得宣稱未執行的驗證為成功。
 | Change | Validation | Acceptance Criteria |
 | --- | --- | --- |
 | [2] Fetch | `python src/fetch_pages.py` | `_manifest.json` 存在且每頁記錄 `http_status`；結束碼 0（有失敗記錄時為 1，須如實回報） |
-| [3] Extract | `python src/extract_pages.py` | `extracted/*.json` 每檔可 JSON 解析且含 `title`／`source`／非空 `text`；`extraction_report.md` 產出且標出 `source`（與 `title`）為空的頁 |
+| [3] Extract | `python src/extract_pages.py` | `extracted/*.json` 每檔可 JSON 解析且含 `title`／`source`／非空 `text`；`extraction_report.md` 產出且標出 `source`（與 `title`）為空的頁；`extracted_readable/*.md` 每頁對應一筆 JSON 且 `_index.md` 產出（.md 數 = `parsed_count`，skipped 頁無 .md） |
 | [4] Clean | `python src/clean_pages.py` | `cleaned/*.md` 產出、非空，含 frontmatter（至少 `title`、`source_url`）且 frontmatter 與 `# <title>` 之間有空行；`cleaning_report.md` 產出 |
 | [5] Chunk | `python src/chunk_pages.py` | `chunks.jsonl` 每行可 JSON 解析且含 `source_url`、`title`、`section`、`chunk_id`；**每 chunk ≤ 254 wordpieces 斷言通過** |
 | [6] Embed | `python src/embed_chunks.py` | `embeddings.jsonl` 每行含 384 維向量、norm = 1、`model_revision` 非空；與 `chunks.jsonl` 逐筆 `chunk_id` 對應一致 |
