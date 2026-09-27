@@ -37,16 +37,19 @@ Minecraft_RAG/
 ├── data/
 │   ├── raw/                          ← [2] 抓取
 │   │   ├── _manifest.json            ← 單次抓取記錄（覆蓋）
+│   │   ├── _fetch_log.txt            ← 逐頁成敗 debug log（覆蓋，不入版控）
 │   │   └── 1.21.1/
 │   │       └── applied-energistics-2/
 │   │           └── <chapter>/
 │   │               └── *.html
 │   ├── processed/
-│   │   ├── extracted/                ← [3] 抽取
+│   │   ├── extracted/                ← [3] 抽取（真值）
 │   │   │   └── 1.21.1/
 │   │   │       └── applied-energistics-2/
 │   │   │           └── <chapter>/
 │   │   │               └── *.json
+│   │   ├── extracted_readable/       ← [3] 人類可讀衍生物（不入版控）
+│   │   │   └── _index.md             ←   全頁索引（驗收用）
 │   │   ├── cleaned/                  ← [4] 清理
 │   │   │   └── 1.21.1/
 │   │   │       └── applied-energistics-2/
@@ -60,6 +63,9 @@ Minecraft_RAG/
 ├── reports/                          ← 驗證報告
 │   ├── extraction_report.md          ← [3] 單次報告（覆蓋）
 │   └── cleaning_report.md            ← [4] 單次報告（覆蓋）
+├── docs/
+│   └── adr/                          ← Architecture Decision Records
+│       └── ADR-001-sitemap-as-url-source.md  ← [2] URL 真值來源決策
 └── src/
     ├── fetch_pages.py                ← [2] 抓取
     ├── extract_pages.py              ← [3] 抽取
@@ -88,22 +94,25 @@ Minecraft_RAG/
 ```
 
 - `mod` 存**模組原名**（`Applied Energistics 2`），**不 slug 化**；[2] 才用 `python-slugify` 轉成 `mod_slug` 寫入路徑。
-- **入口僅作為導航來源，不作為抓取目標**。
-- **整條 URL 鏈的起點**：`sources.json` 的 `entry_url` 是 pipeline 所有 URL 的源頭；逐頁 URL 由 [2] 解析其側邊欄導覽產生，再經 [3] trafilatura 抽取為 `source`，一路傳至 chunk 的 `source_url`（見 §4 [5]）。
-- **抓取範圍**：入口頁側邊欄的所有 `<a href>`。
-- **方式**：BeautifulSoup 解析導航。
+- **入口僅用於推導站台根**（`urlparse` 取 scheme + host），**不作為抓取目標**；`version` 直接取自 `sources.json` 的 `version` 欄位，**不由入口頁推導**。
+- **整條 URL 鏈的起點**：`sources.json` 的 `version` 給定版本前綴、`entry_url` 推導站台根；逐頁 URL 由 [2] 解析 **sitemap.xml** 產生（見 `docs/adr/ADR-001`），再經 [3] trafilatura 抽取為 `source`，一路傳至 chunk 的 `source_url`（見 §4 [5]）。
+- **抓取範圍**：sitemap.xml 中版本前綴 `/{version}/` 下的所有頁，排除入口頁本身。
+- **方式**：`robots.txt` 的 `Sitemap:` 宣告（找不到才試慣例路徑）+ `xml.etree.ElementTree` 解析。
 - **廢棄舊的 sources.json**（6 頁人工清單）。
 
 ### [2] 抓取 raw HTML
 
-- **輸入**：`sources.json` 的 `entry_url`
-- **職責**：只負責網路 I/O，**不做 HTML→Markdown 轉換**；同時解析路徑三元素（`mod_slug`／`chapter`／`page_slug`）並寫入目錄
+- **輸入**：`sources.json`（`version` 欄位 + `entry_url` 推導的站台根）；逐頁 URL 來自 **sitemap.xml**
+- **職責**：只負責網路 I/O，**不做 HTML→Markdown 轉換**、**不解析導覽 DOM**；同時解析路徑三元素（`mod_slug`／`chapter`／`page_slug`）並寫入目錄
+- **URL 真值來源**：**sitemap.xml**（決策見 `docs/adr/ADR-001-sitemap-as-url-source.md`）。站台為 Next.js SPA，入口頁側邊欄為情境式展開且 `items-blocks-machines` 索引頁為 client-side rendering，伺服器 HTML 不含完整頁面清單；**不做側邊欄爬取，亦不保留任何相關 fallback**。
 - **步驟**：
-  1. 抓入口頁（僅作為導航來源）
-  2. 用 BeautifulSoup 解析側邊欄導航，取得所有子頁面 URL
-  3. 逐頁抓取 raw HTML，每頁間隔 0.5 秒
-  4. 對每個 URL 解析路徑三元素，存入 `data/raw/<version>/<mod_slug>/<chapter>/<page_slug>.html`
-  5. 輸出 `data/raw/_manifest.json`（單次記錄，覆蓋）
+  1. 由 `entry_url` 推導站台根，抓 `robots.txt` 找 `Sitemap:` 宣告；無宣告則依序試 `/sitemap.xml`、`/sitemap_index.xml`、`/sitemap-index.xml`
+  2. 判定標準：HTTP 200 且 body 根節點為 `<urlset>` 或 `<sitemapindex>`；皆失敗 → **fail-fast「此站台無可用 sitemap」**，不 fallback
+  3. 以 `xml.etree.ElementTree`（標準庫）解析；`<sitemapindex>` 則遞迴抓每個子 sitemap 後合併 `<loc>`
+  4. 版本過濾：`urlparse(url).path.startswith(f"/{version}/")`（**必須帶尾部斜槓**，不可 `"1.21.1" in url`，避免 `1.21.10` 誤判）；排除入口頁 `path == f"/{version}/index"`
+  5. 逐頁抓取 raw HTML，每頁間隔 0.5 秒
+  6. 對每個 URL 解析路徑三元素，存入 `data/raw/<version>/<mod_slug>/<chapter>/<page_slug>.html`
+  7. 輸出 `data/raw/_manifest.json`（單次記錄，覆蓋）
 
 - **路徑三元素解析規則**（[2] 唯一計算來源，下游一律從路徑讀）：
 
@@ -123,10 +132,13 @@ Minecraft_RAG/
     "version": "1.21.1",
     "mod": "Applied Energistics 2",
     "mod_slug": "applied-energistics-2",
+    "source": "sitemap",
     "fetched_at": "2026-09-25T14:00:00",
-    "entries": [
+    "urls": [
       {
         "url": "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/energy",
+        "chapter": "ae2-mechanics",
+        "page_slug": "energy",
         "local_path": "data/raw/1.21.1/applied-energistics-2/ae2-mechanics/energy.html",
         "http_status": 200,
         "fetched_at": "2026-09-25T14:00:00"
@@ -136,14 +148,15 @@ Minecraft_RAG/
   ```
 
   - `mod` 保留**原名**，`mod_slug` 為 slug 化結果；兩者都記錄，讓 `_manifest.json` 可單獨追溯原名。
-  - `entries[].local_path` 已含 chapter 層；失敗頁 `local_path` 為 `null`。
+  - `source` 記錄 URL 發現來源（`"sitemap"`），用於追溯 [2] 的真值來源。
+  - `urls[].local_path` 已含 chapter 層；失敗頁 `local_path` 為 `null`。
 
 - **失敗處理**：不重試，記錄 `http_status` 與 `local_path: null`，人工查驗後再次執行
 
 ### [3] 抽取主文
 
 - **輸入**：`data/raw/<version>/<mod_slug>/<chapter>/*.html`
-- **職責**：用 **trafilatura** 從 raw HTML 抽取主文
+- **職責**：用 **trafilatura** 從 raw HTML 抽取主文；同時**判定並跳過 navigation_only 頁**（導覽索引頁，無知識內容）
 - **步驟**：
   1. 遍歷 `data/raw/<version>/<mod_slug>/<chapter>/` 下的所有 HTML
   2. 從 `_manifest.json` 取得每個 URL 的 `http_status`
@@ -153,7 +166,19 @@ Minecraft_RAG/
      trafilatura.extract(html, output_format="json", with_metadata=True, include_tables=True)
      ```
 
-  4. 存入 `data/processed/extracted/<version>/<mod_slug>/<chapter>/<page_slug>.json`
+  4. **navigation_only 判定**（命中即跳過，不輸出 extracted 檔）。兩條規則為 **OR**，**各自配發獨立 reason 字串**，不可共用同一值——未來若出現「非 `-index` 結尾但仍是導覽頁」的案例，需能由 reason 分辨是哪一條規則命中：
+
+     | 規則 | 判定條件 | `reason` 值 |
+     | --- | --- | --- |
+     | 規則一（URL） | URL path 以 `-index` 結尾（如 `ae2-mechanics/ae2-mechanics-index`） | `url_ends_with_index` |
+     | 規則二（內容） | trafilatura 抽出文字長度 < `NAV_MIN_TEXT_LENGTH`（200 字元）**且** `<article>` 內連結密度 > `NAV_MAX_LINK_DENSITY`（0.5） | `short_text_high_link_density` |
+
+     - **連結密度只算 `<article>` 內容區，不算整頁**：本站台每頁都帶情境式展開的側邊欄（最多 91 個連結），若對整頁 HTML 計算，短內容頁（物品／配方頁）會被側邊欄連結拖高密度而遭誤殺。實測對照（整頁 vs `<article>`）：`certus_quartz_dust` 0.86→0.00、`quartz_glass` 0.85→0.00、`crank` 0.86→0.00——這類頁是真內容頁，規則二對它們必須判定為不命中。
+     - **閾值 0.5 的實測依據**（124 頁全量，2026-09-27）：規則一相關的 `-index` 頁 `<article>` 密度為 0.93／0.97；非 `-index` 的 121 頁最高 0.44（`p2p-tunnels` 0.440、`quantum-bridge` 0.431，其餘 ≤ 0.31）。`0.44 < 0.5 < 0.93`，0.5 落在兩群之間的空隙，無重疊。
+     - **規則一不可省**：`items-blocks-machines-index` 為 client-side rendering 頁，其 `<article>` 僅 354 字元占位文字（`Unknown category: ...`）且**零連結**，密度 0.0000——規則二對它判定不命中，只能靠規則一的 URL 後綴命中。
+     - 預期命中：3 個 `*-index` 章節索引頁；實際全數由**規則一**命中（規則二目前命中 0 頁，保留給未來「無 `-index` 後綴」的導覽頁）。
+  5. 其餘頁存入 `data/processed/extracted/<version>/<mod_slug>/<chapter>/<page_slug>.json`
+  6. 輸出 `data/processed/extracted/_parse_report.json`：`{ parsed_count, skipped: [{url, reason}], warnings: [{url, phase, error}], errors: [] }`；`reason` 只填上表兩值之一（`navigation_only` 是**判定類別名**，不是 `reason` 的合法值）；`warnings` 記非致命問題（.md 衍生物寫入失敗等），**不影響 exit code**，其 `url` 為選填（`readable_index` 那筆無 `url`）
 - **輸出 JSON 結構**：
 
   ```json
@@ -161,13 +186,21 @@ Minecraft_RAG/
     "title": "Autocrafting",
     "text": "...",
     "source": "https://...",
-    "hostname": "guide.appliedenergistics.org",
+    "hostname": "appliedenergistics.org",
     "http_status": 200
   }
   ```
 
   - **不加 `page_slug`／`chapter` 欄位**：這些 metadata 由 [5] 直接從**目錄路徑**讀取，extracted JSON 只保留 trafilatura 原始輸出與 `http_status`。
   - **`title` 保留不異動**：trafilatura 抽出的 `title` 原封留在 extracted JSON，由 [4] 帶入 cleaned MD 的 H1。
+  - **`hostname` 保留 trafilatura 原值**：實測為 `appliedenergistics.org`（非 `guide.appliedenergistics.org`），依「資料不異動」原則**不修正**。
+
+- **人類可讀衍生物**（驗收用，非真值）：
+  - 每個 `extracted/**/*.json` 另產出對應的 `extracted_readable/**/*.md`，**路徑鏡像、僅副檔名不同**；skipped 頁不產出
+  - `.md` 格式：YAML front matter（`title`／`source`／`hostname`／`http_status`／`text_length`）→ 空行 → `# {title}` → 空行 → `text` **原文（不加工、不清理、不換行處理）**
+  - `extracted_readable/_index.md`：表格列出所有已輸出頁（`title`／`chapter`／`page_slug`／`text_length`／`source`），`chapter`／`page_slug` 取自 `_manifest.json`
+  - **生成順序與失敗處理**：JSON 成功後才寫 .md；.md 寫入失敗只記 warning（log 與 `_parse_report.json` 的 `warnings`），**不影響 exit code**、不重試
+  - **真值以 JSON 為準**；.md 不入版控（見 `.gitignore`），丟失可由 [3] 重產
 
 - **狀態判斷**：`http_status` + `text` 是否為空；報告記錄 `source`（與 `title`）是否為空，供人工查驗（不預寫 fallback）
 - **更新行為**：單次記錄，覆蓋
@@ -245,7 +278,7 @@ Minecraft_RAG/
   - **欄位來源（`mod`／`chapter`／`page` 明確定義，非待定項）**：三者全部由路徑讀取，源頭是 [2] 從 URL 解析寫入的路徑三元素；`title`／`source_url` 由 [4] 從 extracted JSON 原封寫入 cleaned MD 的 frontmatter（`title` 同時寫入 H1），[5] 讀 frontmatter；`section` 由 MarkdownHeaderTextSplitter 提供。
   - **`title` 欄位（資料不異動原則）**：extracted JSON 的 `title`（trafilatura 抽取結果）由 [4] 原封寫入 cleaned MD 的 frontmatter 與第一個 `#` 標題；[5] **讀 frontmatter** 寫入 chunk metadata，**不重新計算、不改寫**；H1 供 MarkdownHeaderTextSplitter 當結構，非 title 來源。生成答案時直接用 chunk 裡的 `title`，**不回查 extracted JSON**。
   - **`title` 與 `page` 是兩個獨立欄位**：`title` = 頁面標題原文（如 `Energy`），從 cleaned MD 的 frontmatter 讀；`page` = 路徑 slug（如 `energy`），從檔名讀。兩者不可互相替代。
-  - **`source_url` 來源**：來自 cleaned MD 的 frontmatter，值為 extracted JSON 的 `source`（trafilatura 從 HTML 抽出）；鏈路起點為 `sources.json`（`entry_url` → [2] 解析側邊欄導覽產生逐頁 URL → [3] trafilatura 抽取）。`_manifest.json` 的 `url` 是「實際抓取的 URL」，`source_url` 取值以 trafilatura 的 `source` 為準；若 frontmatter 的 `source_url` 為空，[5] 中止該頁處理並報錯（不產出該頁 chunk）。
+  - **`source_url` 來源**：來自 cleaned MD 的 frontmatter，值為 extracted JSON 的 `source`（trafilatura 從 HTML 抽出）；鏈路起點為 `sources.json`（`version` 欄位 + `entry_url` 推導站台根 → [2] 解析 sitemap.xml 產生逐頁 URL → [3] trafilatura 抽取）。`_manifest.json` 的 `url` 是「實際抓取的 URL」，`source_url` 取值以 trafilatura 的 `source` 為準；若 frontmatter 的 `source_url` 為空，[5] 中止該頁處理並報錯（不產出該頁 chunk）。
   - **權威來源分離**：結構性 metadata（`version`／`mod`／`chapter`／`page`）權威來源為**目錄路徑**，frontmatter 對應欄位 [5] 不讀（僅供人類閱讀）；內容性 metadata（`title`／`source_url`）由 **frontmatter 承載**（路徑推不出）。frontmatter 與 H1 的 `title` 由 [4] 保證一致；若不一致，以 frontmatter 為準。
   - **frontmatter 與 splitter 的界線待驗證**：frontmatter 是否進 MarkdownHeaderTextSplitter 依其實際行為決定，實作時驗證，本契約不預設（見 §7 待確認）。
   - **slug 只用於路徑與命名**：`mod`／`chapter`／`page` 欄位為 slug 值，**不可**用於 `text`、`title` 或 `section`（`title`／`section` 保留原始大小寫與空白）。
@@ -302,7 +335,9 @@ Minecraft_RAG/
 | --- | --- |
 | `sources.json` | 人工維護 |
 | `_manifest.json` | 單次記錄，覆蓋 |
+| `_fetch_log.txt` | 單次記錄，覆蓋；[2] 逐頁成敗 debug log，不入版控 |
 | `extracted/*.json` | 單次記錄，覆蓋 |
+| `extracted_readable/*.md` | 單次記錄，覆蓋；人類驗收用，不入版控，可由 [3] 重產 |
 | `cleaned/*.md` | 單次記錄，覆蓋 |
 | `chunks.jsonl` | 單次記錄，覆蓋 |
 | `embeddings.jsonl` | 單次記錄，覆蓋 |
@@ -316,6 +351,7 @@ Minecraft_RAG/
 | 決策 | 內容 |
 | --- | --- |
 | 廢棄 `sources.json` 的舊形式 | 從「6 頁人工清單」改為「入口 URL + 版本 + 模組」 |
+| **[2] URL 真值來源 = sitemap.xml** | 站台為 Next.js SPA，側邊欄情境式展開且 `items-blocks-machines` 索引為 CSR；側邊欄 BFS 僅得 39/124。改以 sitemap 為真值來源（1.21.1 共 125 URL，排除入口 124），**廢除側邊欄爬取、不保留 fallback**（見 `docs/adr/ADR-001`） |
 | 抓取與抽取分離 | `fetch_pages.py` 只抓取，`extract_pages.py` 用 trafilatura 抽取 |
 | 目錄按版本／模組／章節分 | `data/raw/<version>/<mod_slug>/<chapter>/`；metadata 由路徑承載，下游不讀 JSON |
 | `mod` 來源 | `sources.json` 存模組**原名**（`Applied Energistics 2`）；[2] 以 `python-slugify` 轉 `mod_slug` 寫入路徑（slug 只用於路徑與命名） |
