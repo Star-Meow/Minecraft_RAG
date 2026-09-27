@@ -182,8 +182,8 @@ python src/embed_chunks.py    # [6] 向量化 → data/processed/embeddings/embe
 | 階段 | 狀態 |
 | --- | --- |
 | [1] 入口 | `sources.json` 已套用新格式（`version`／`mod`／`entry_url`／`exclude`／`include`） |
-| [2] 抓取 | 待依新架構實作（舊版含 HTML→MD 轉換，已不符合新職責） |
-| [3] 抽取 | 待實作（trafilatura） |
+| [2] 抓取 | 已實作（`src/fetch_pages.py`）：sitemap.xml 真值來源、版本過濾、路徑三元素、`_manifest.json`；124 頁已跑通 |
+| [3] 抽取 | 已實作（`src/extract_pages.py`）：trafilatura 抽取、navigation_only 兩規則判定、人類可讀衍生物；121 頁已跑通（3 頁導覽索引跳過） |
 | [4] 清理 | 待實作；噪音規則待第一波資料後歸納 |
 | [5] 切分 | 待實作（改用 langchain-text-splitters + 真 tokenizer） |
 | [6] Embedding | 待依新 schema 實作（revision 鎖定 + 新輸入格式） |
