@@ -9,7 +9,7 @@
 
 ### 輸入
 
-- `data/processed/extracted/<version>/**/*.json`：只讀 `title`／`source`／`markdown`（格式見 [02_extract.md](02_extract.md)）；缺 `markdown` 視為例外。
+- `data/processed/extracted/<version>/**/*.json`：只讀 `title`／`source`／`markdown`／`recipes`（格式見 [02_extract.md](02_extract.md)）；缺 `markdown` 視為例外。
 - `sources.json`：版本與模組（共用設定）。
 
 ### 輸出
@@ -61,9 +61,19 @@ As a terminal is often the first subpart someone might place, ...
 | 4 | **R4b 黏合尾端標籤** | 只作用於**整頁黏成單行**的頁：自第一個黏在前文之後（前一字元不是空白）的 `Recipe`／`Recipes` 起到行尾，能被完整切成白名單 token → 切除。長 token 優先、token 間容許單一空格、區分大小寫、只處理行尾；切除後該行必須仍有內容，否則不切並警告 | 同白名單 |
 | 5 | **R6 標題層級正規化** | 以堆疊追蹤祖先標題，輸出層級 = 2 + 祖先數：一般頁 h2 → `##`、其下 h3 → `###`；多 H1 頁的頁內 H1 → `##`、其下 H2 → `###`；直屬頁面標題的 H2 仍為 `##`。每頁只保留寫檔時的 `# <title>` | — |
 | 6 | **R7 空章節移除** | 標題範圍（到下一個同層或更高層標題為止）內沒有任何非空白的非標題行 → 刪除該標題；由深到淺反覆判定，只含空子章節的章節也一併刪除 | — |
-| 7 | **空 body 守衛** | 處理後 body 為空 → 不輸出，記入報告；不足 200 字元 → 照常輸出，報告標示 | 200 |
+| 7 | **R8 配方輸出** | 所有規則之後，若 extracted JSON 的 `recipes` 非空，於頁尾加上 `## Recipes`，每個配方一行：`- 類型 [圖示名稱]: 材料 → 產物`。一般配方的材料為「數量 × 名稱」，Inscriber／Smithing 為「槽位 名稱」；產物不寫數量。本段不受 R1–R7 影響 | — |
+| 8 | **空 body 守衛** | 處理後 body 為空 → 不輸出，記入報告；不足 200 字元 → 照常輸出，報告標示 | 200 |
 
 白名單（長 token 優先排序）：`Crafting (Shapeless)`、`Throw in Water`、`Inscriber`、`Crafting`、`Smelting`、`Smithing`、`Recipes`、`Charger`、`Recipe`。
+
+R8 輸出範例：
+
+```markdown
+## Recipes
+- Crafting [Crafting Table]: 4 × Stick, 1 × Copper Ingot → Wooden Crank
+- Inscriber [Inscriber]: top Printed Logic Circuit, middle Redstone Dust, bottom Printed Silicon → Logic Processor
+- Smithing [Smithing Table]: template Fluix Upgrade, base Certus Quartz Axe, addition Fluix Block → Fluix Axe
+```
 
 **不處理**（只計數或記錄）：孤立 `-`、句子之間的黏合、相鄰表格、段落空行。
 
@@ -117,6 +127,7 @@ R4a 刪光標籤後，若章節底下原本只有標籤，就只剩一行標題�
 | 2026-10-17 | 是否回抽取階段重抽 | 不重抽（見否決的方案） |
 | 2026-10-22 | 標題結構 | 改讀 `markdown`、規則以去記號內容比對；新增 R6 |
 | 2026-10-23 | 空章節 | 由本階段處理，新增 R7 |
+| 2026-10-24 | 配方 | 由 R8 把 `recipes` 轉為文字（順序：類型、材料、箭頭、產物）；材料依重複次數計數；產物無數量就不顯示；不做表格，配方圖片留待未來直接使用 |
 | 2026-10-23 | R2 | **不以字數判斷**（短的物品／配方頁很多，字數會隨站台格式改變）。R2 改為只警告、不排除；跳轉頁改由抽取以 HTML 結構列出候選，人工複核確認後再排除。取代 2026-10-17 的門檻 110 |
 
 ## 4. 否決的方案
@@ -133,10 +144,11 @@ R4a 刪光標籤後，若章節底下原本只有標籤，就只剩一行標題�
 - `cleaned/*.md` 產出、非空，含 frontmatter（至少 `title`、`source_url`），frontmatter 與 `# <title>` 之間有空行。
 - 每頁恰好一個 `#`；沒有白名單標籤的標題行；沒有空章節。
 - 被排除的頁不產出檔案，以報告為憑；**對帳：輸出頁數 + 報告列出的跳過頁數 = 輸入頁數**。
-- **純刪除檢查**：輸出的每一行去掉標題記號後，是某個輸入行或其子字串。
+- **純刪除檢查**：`## Recipes` 之前的每一行去掉標題記號後，是某個輸入行或其子字串（`## Recipes` 段由 R8 產生，不在檢查範圍）。
+- 有配方的頁都有 `## Recipes`，行數等於 `recipes` 筆數。
 - 連跑兩次，輸出位元組相同（冪等）。
 
-最近一次驗證結果（2026-10-23，站台改為靜態 HTML 後重新抓取，見 [T8](07_troubleshooting.md#t8-站台建置方式改變內容未更新)）：輸出 119 + 跳過 0 = 輸入 119，例外 0（2 個跳轉頁已依 `sources.json` 的 `exclude` 在抽取跳過）；R2 警告 0 頁；R1 A 96、B 21、C 1；R4a 23 頁 67 行；R4b 19 頁 19 處；R6 69 頁含小標題（`##` 187、`###` 40）；R7 0 個；冪等通過。
+最近一次驗證結果（2026-10-23，站台改為靜態 HTML 後重新抓取，見 [T8](07_troubleshooting.md#t8-站台建置方式改變內容未更新)）：輸出 119 + 跳過 0 = 輸入 119，例外 0（2 個跳轉頁已依 `sources.json` 的 `exclude` 在抽取跳過）；R2 警告 0 頁；R1 A 96、B 21、C 1；R4a 23 頁 67 行；R4b 19 頁 19 處；R6 69 頁含小標題（`##` 187、`###` 40）；R7 0 個；R8 85 頁 246 個配方（加上配方前後，其餘正文 119/119 相同）；冪等通過。
 
 前一版（Next.js HTML，2026-10-23 稍早）：輸出 119 + 跳過 2（R2 依字數排除跳轉頁）；R1 A 97、B 21、C 1；R4a 44 頁 174 行；R6 `##` 187；R7 1 個。保護標題 16/16 存活的檢查為 2026-10-17 的結果。
 
@@ -149,4 +161,4 @@ R4a 刪光標籤後，若章節底下原本只有標籤，就只剩一行標題�
 - **極短頁**：部分物品頁刪標籤後不足 200 字元，照常輸出並在報告標示。
 - **跳轉頁由抽取排除**：經人工確認並列入 `sources.json` 的 `exclude` 後，在抽取跳過，不會進入本階段；新出現的候選在確認前仍會輸出，並由 R2 警告。
 - **白名單的有效期**：白名單依本批資料校準；站方新增配方類型或改版時須重驗（站台已於 2026-10-23 改為靜態 HTML，待重新盤點）。
-- **配方材料的取回方向（未來）**：材料在 raw HTML 配方區塊 `recipe_ingredientBox` 內 `<img>` 的 `aria-description` 屬性中（複核 5 頁：`crank`、`fluix_pearl`、`guide`、`inscriber`、`quartz_glass`，5/5 皆有配方區塊；例如 `crank` 的材料為 `Stick`×4、`Copper Ingot`，結果 `Wooden Crank`；`guide` 的材料為 `Book`，結果 `Guide`；材料欄的最後一個值為產出物）。若要取回，須在 [抽取](02_extract.md) 新增屬性抽取，屬契約變更。
+- **配方材料已取回**（2026-10-24）：由 [抽取](02_extract.md) 解析成 `recipes`，R8 輸出成文字；限制見抽取文件的待定事項（輪流顯示的材料只取第一個、無產物數量、無擺放形狀）。

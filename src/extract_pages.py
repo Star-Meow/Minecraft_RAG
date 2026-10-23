@@ -190,6 +190,67 @@ def build_markdown(text: str, headings: list) -> tuple:
     return "\n".join(lines), matched, unmatched
 
 
+def _item_name(element) -> str:
+    """取元素內第一個帶 aria-description 的圖示名稱（物品名稱）；沒有則回傳空字串。"""
+    if element is None:
+        return ""
+    img = element.find("img", attrs={"aria-description": True})
+    return img.get("aria-description") if img is not None else ""
+
+
+def parse_recipes(html: str) -> tuple:
+    """解析 <article> 內的配方區塊（div.recipeBoxLayout），回傳 (配方清單, 無法解析的清單)。
+
+    配方：{"label": 頁面上的類型文字, "station": 類型圖示名稱, "shapeless": bool,
+           "ingredients": [{"name", "count"}] 或 None, "slots": [[槽位, 名稱]] 或 None,
+           "result": 產物名稱}
+    - 一般配方：類型 → 材料格 → 箭頭 → 產物；材料依出現順序計數（重複次數即數量），空格與火焰略過。
+    - Inscriber：材料以槽位（top／middle／bottom）記錄，產物在 result 槽。
+    - Smithing：材料依序為 template／base／addition。
+    - 輪流顯示的材料（cycling）只取第一個；產物數量與擺放形狀不保留（見 docs/02_extract.md）。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.find("article")
+    recipes = []
+    failures = []
+    if article is None:
+        return recipes, failures
+    for box in article.select("div.recipeBoxLayout"):
+        parts = box.find_all(recursive=False)
+        label = parts[0].get_text(" ", strip=True) if parts else ""
+        station = _item_name(parts[0]) if parts else ""
+        recipe = {"label": label, "station": station, "shapeless": "Shapeless" in label,
+                  "ingredients": None, "slots": None, "result": ""}
+        if station == "Inscriber" and len(parts) >= 2:
+            slots = []
+            for cell in parts[1].find_all(recursive=False):
+                slot = (cell.get("class") or [""])[0].replace("ae2-inscriber-", "")
+                name = _item_name(cell)
+                if slot == "result":
+                    recipe["result"] = name
+                elif name:
+                    slots.append([slot, name])
+            recipe["slots"] = slots
+        elif len(parts) >= 4:
+            cells = parts[1].select(".ingredient-box") or [parts[1]]
+            names = [_item_name(cell) for cell in cells]
+            names = [n for n in names if n]
+            if station == "Smithing Table" and len(names) == 3:
+                recipe["slots"] = [["template", names[0]], ["base", names[1]], ["addition", names[2]]]
+            else:
+                counts = {}
+                for n in names:
+                    counts[n] = counts.get(n, 0) + 1
+                recipe["ingredients"] = [{"name": n, "count": c} for n, c in counts.items()]
+            recipe["result"] = _item_name(parts[-1])
+        has_inputs = bool(recipe["ingredients"] or recipe["slots"])
+        if not (label and station and recipe["result"] and has_inputs):
+            failures.append({"label": label, "station": station, "result": recipe["result"]})
+            continue
+        recipes.append(recipe)
+    return recipes, failures
+
+
 def redirect_link(html: str) -> tuple:
     """跳轉頁候選判定（結構判定，不看字數；見 docs/02_extract.md）。
 
@@ -239,14 +300,16 @@ def extracted_output_path(local_path: str) -> Path:
     return EXTRACTED_DIR / rel.with_suffix(".json")
 
 
-def build_extracted_record(extracted: dict, markdown: str, http_status) -> dict:
-    """組 extracted JSON：trafilatura 原始欄位 + markdown + http_status。
+def build_extracted_record(extracted: dict, markdown: str, recipes: list, http_status) -> dict:
+    """組 extracted JSON：trafilatura 原始欄位 + markdown + recipes + http_status。
 
-    text 保留 trafilatura 原值不異動；markdown 為 text 加標題記號的版本。
+    text 保留 trafilatura 原值不異動；markdown 為 text 加標題記號的版本；
+    recipes 為配方區塊的結構化結果（見 parse_recipes）。
     不加 page_slug/chapter（[5] 從路徑讀）；hostname 保留 trafilatura 原值不修正。
     """
     record = {field: extracted.get(field) for field in EXTRACTED_FIELDS}
     record["markdown"] = markdown
+    record["recipes"] = recipes
     record["http_status"] = http_status
     return record
 
@@ -393,6 +456,19 @@ def write_extraction_report(path: Path, manifest: dict, stats: dict) -> None:
             lines.append(f"| {c['url']} | {title} | {c['target']} | {in_kb} |")
         lines.append("")
 
+    lines.append("## 配方（recipes 欄位）")
+    lines.append("")
+    lines.append(f"- 配方總數：{stats['recipe_count']}；無法解析：{len(stats['recipe_unparsed'])}")
+    for station, n in sorted(stats["recipe_types"].items(), key=lambda x: (-x[1], x[0])):
+        lines.append(f"  - {station}：{n}")
+    if stats["recipe_unparsed"]:
+        lines.append("")
+        lines.append("| URL | label | station | result |")
+        lines.append("| --- | --- | --- | --- |")
+        for u in stats["recipe_unparsed"]:
+            lines.append(f"| {u['url']} | {u['label']} | {u['station']} | {u['result']} |")
+    lines.append("")
+
     if stats["headings_unmatched"]:
         lines.append("## 未對應標題（text 中找不到完全相同的行，markdown 不加記號）")
         lines.append("")
@@ -458,6 +534,9 @@ def main() -> int:
     headings_matched = 0
     headings_unmatched = []  # 標題對應不到 text 的行（報告用，不影響 exit code）
     redirect_candidates = []  # 尚未確認的跳轉頁候選：只列清單供人工複核，不排除
+    recipe_count = 0
+    recipe_types = {}         # station → 配方數
+    recipe_unparsed = []      # 無法解析的配方區塊（報告列出，供人工檢查）
     excluded_urls = load_excluded_urls(SOURCES_PATH)
 
     for entry in html_entries:
@@ -505,7 +584,15 @@ def main() -> int:
         for level, heading in unmatched:
             headings_unmatched.append({"url": url, "level": level, "heading": heading})
 
-        record = build_extracted_record(extracted, markdown, entry.get("http_status"))
+        # 配方區塊：結構化為類型、材料、產物（不處理圖片本身）
+        recipes, recipe_failures = parse_recipes(html)
+        recipe_count += len(recipes)
+        for r in recipes:
+            recipe_types[r["station"]] = recipe_types.get(r["station"], 0) + 1
+        for f in recipe_failures:
+            recipe_unparsed.append({"url": url, **f})
+
+        record = build_extracted_record(extracted, markdown, recipes, entry.get("http_status"))
         out_path = extracted_output_path(entry["local_path"])
         write_json(out_path, record)
         parsed_count += 1
@@ -556,6 +643,9 @@ def main() -> int:
         "headings_matched": headings_matched,
         "headings_unmatched": headings_unmatched,
         "redirect_candidates": redirect_candidates,
+        "recipe_count": recipe_count,
+        "recipe_types": recipe_types,
+        "recipe_unparsed": recipe_unparsed,
         "parsed_urls": {d["url"].rstrip("/") for d in parsed_detail},
     }
     write_parse_report(PARSE_REPORT_PATH, parsed_count, skipped, errors, warnings)

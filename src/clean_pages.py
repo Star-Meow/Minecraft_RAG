@@ -19,6 +19,7 @@
 - R6 標題層級正規化：頁內剩餘標題依相對深度輸出為 ##／###／####
   （整頁只保留 [4] 寫入的 # <title>；多 H1 頁的頁內 H1 → ##、其下 H2 → ###，見 docs/03_clean.md）
 - R7 空章節移除：沒有任何內容的標題（R4a 刪光標籤後的殘留）一併刪除（docs/03_clean.md）
+- R8 配方輸出：[3] 的 recipes 欄位轉為頁尾的 ## Recipes，每個配方一行「類型: 材料 → 產物」
 - 空 body 守衛：規則處理後 body 為空 → 不輸出；不足 200 字元 → 輸出但標示
 
 不處理：孤立 `-`、句子之間的黏合、相鄰表格、段落空行（僅計數與記錄）。
@@ -73,6 +74,7 @@ NEWLINE = "\n"
 # [3] markdown 欄位的標題行：'#'×level + 空格 + 標題文字（docs/02_extract.md）
 HEADING_RE = re.compile(r"^(#{1,6}) (.*)$")
 MIN_SUB_LEVEL = 2                # R6：頁內標題最高只到 ##（# 保留給 <title>）
+RECIPES_HEADING = "## Recipes"   # R8：配方段落的標題（自成一個章節）
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +294,20 @@ def normalize_heading_levels(lines: list) -> tuple:
     return new_lines, counts
 
 
+def render_recipe(recipe: dict) -> str:
+    """R8：配方轉為一行文字，順序為「類型: 材料 → 產物」。
+
+    類型 = 頁面上的類型文字 + [類型圖示名稱]（保留 Furnace／Blast Furnace 等差異）。
+    材料：一般配方為「數量 × 名稱」；Inscriber／Smithing 為「槽位 名稱」。產物不寫數量（HTML 無此資訊）。
+    """
+    kind = f"{recipe['label']} [{recipe['station']}]"
+    if recipe.get("slots"):
+        inputs = ", ".join(f"{slot} {name}" for slot, name in recipe["slots"])
+    else:
+        inputs = ", ".join(f"{i['count']} × {i['name']}" for i in recipe["ingredients"])
+    return f"- {kind}: {inputs} → {recipe['result']}"
+
+
 def drop_empty_sections(lines: list) -> tuple:
     """R7：刪除沒有任何內容的標題（R4a 刪光標籤後留下的空章節，見 docs/03_clean.md）。
 
@@ -329,7 +345,7 @@ def drop_empty_sections(lines: list) -> tuple:
 # [4.3] 單頁處理
 # ---------------------------------------------------------------------------
 def process_page(record: dict) -> tuple:
-    """對單頁施規則集（R2 → R1 → R4a → R4b → R6 → R7 → 空 body 守衛）。
+    """對單頁施規則集（R2 → R1 → R4a → R4b → R6 → R7 → R8 → 空 body 守衛）。
 
     輸入為 [3] 的 markdown 欄位（缺欄位 → ValueError，由呼叫端逐頁隔離）。
     回傳 (body 或 None（不輸出）, 判定紀錄 dict)。
@@ -358,6 +374,7 @@ def process_page(record: dict) -> tuple:
         "orphan_dashes": 0,
         "heading_counts": {},
         "empty_sections": [],
+        "recipes_added": 0,
         "chars_before": len(text),
         "chars_after": 0,
         "short_body": False,
@@ -408,8 +425,15 @@ def process_page(record: dict) -> tuple:
         if log["heading_counts"][level] == 0:
             del log["heading_counts"][level]
 
-    body = "\n".join(lines)
     log["chars_after"] = len("\n".join(content_of(ln) for ln in lines))
+
+    # R8 配方輸出：所有規則之後，於頁尾加上 ## Recipes（來自 [3] 的 recipes 欄位，不受前述規則影響）
+    recipes = record.get("recipes") or []
+    if recipes:
+        lines = lines + [RECIPES_HEADING] + [render_recipe(r) for r in recipes]
+    log["recipes_added"] = len(recipes)
+
+    body = "\n".join(lines)
 
     # 空 body 守衛
     if body.strip() == "":
@@ -567,6 +591,9 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
     lines.append(f"- R6 標題層級正規化：{heading_pages} 頁含小標題；{level_text}")
     r7 = [(rel, h) for rel, log, _ in pages for h in log["empty_sections"]]
     lines.append(f"- R7 空章節移除：{len(r7)} 個")
+    r8_pages = sum(1 for _, log, _ in outputs if log["recipes_added"])
+    r8_total = sum(log["recipes_added"] for _, log, _ in outputs)
+    lines.append(f"- R8 配方輸出：{r8_pages} 頁，{r8_total} 個配方")
     for rel, h in r7:
         lines.append(f"  - `{_md_cell(rel)}`：`{_md_cell(h)}`")
     lines.append("")
@@ -764,6 +791,7 @@ def _error_log(message: str, chars_before: int = 0) -> dict:
         "orphan_dashes": 0,
         "heading_counts": {},
         "empty_sections": [],
+        "recipes_added": 0,
         "chars_before": chars_before,
         "chars_after": 0,
         "short_body": False,

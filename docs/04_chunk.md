@@ -53,7 +53,7 @@ version   = md_file.parent.parent.parent.name     # "1.21.1"
 - **parent**：一個 `##` 章節（`###` 併入所屬的 `##`）；沒有 `##` 的頁，parent = 整頁；超過上限時再切。
 - **child**：在 parent 內切出的片段；只有 child 進入 embedding。
 - **工具**：`MarkdownHeaderTextSplitter`（章節邊界）+ `RecursiveCharacterTextSplitter`（大小切分），皆來自 langchain-text-splitters。
-- **大小上限**：**parent ≤ 1024 tokens**、**child ≤ 256 tokens**。
+- **大小上限**：**parent ≤ 2048 tokens**、**child ≤ 256 tokens**。
   - 以 BGE-M3 tokenizer 計算（`add_special_tokens=False`），選型見 [05_embed.md](05_embed.md)。
   - **只算正文**：標題路徑存於 metadata，不計入、也不另外預留。
   - 超過上限即斷言失敗、exit 1。
@@ -66,7 +66,7 @@ version   = md_file.parent.parent.parent.name     # "1.21.1"
 
 資料是指南型文件，以「頁 → 章節」組織。單層切分有取捨：chunk 小，檢索精準但上下文片段化；chunk 大，上下文完整但向量語意被稀釋。子母分層用小塊檢索、回傳大塊當上下文，是業界常見做法（LangChain ParentDocumentRetriever、LlamaIndex HierarchicalNodeParser）。章節結構由 [抽取](02_extract.md) 與 [清理](03_clean.md) 保留下來，所以 parent 可以直接用 `##` 章節。
 
-### 大小上限：1024／256
+### 大小上限：2048／256
 
 量測（2026-10-23；`BAAI/bge-m3` tokenizer，revision `5617a9f61b028005a4858fdac845db406aefb181`；對象是 cleaned MD 正文，不含 frontmatter、`# title` 與 special tokens）：
 
@@ -86,9 +86,11 @@ version   = md_file.parent.parent.parent.name     # "1.21.1"
 
 理由：
 
-- **parent 1024**：目前最大 838，留約 20% 餘裕，現有資料沒有任何 parent 需要切分；與 child 的比例為 4 倍，和 LlamaIndex 相鄰兩層的比例一致；交給 LLM 的上下文較省、較聚焦。
+- **parent 2048**（2026-10-24 由 1024 調整，人工裁定）：加上 `## Recipes` 後，`storage_cells` 的配方段達 1308 tokens，超過 1024；改為 2048 後現有資料**沒有任何 parent 需要切分**，章節（含配方段）都保持完整。2048 與 LlamaIndex 最上層相同。最初以舊 HTML 量測時（最大 838）選擇 1024，理由是交給 LLM 的上下文較省、比例為 4 倍。
 - **child 256**：落在常見的 256–512 範圍；大於最長段落 237，任何段落都不必從中間切開；在現有資料上比 512 多切開 19 個 parent（29 對 10），子母分層現在就有作用。
 - **不另外預留 header**：BGE-M3 上限 8192，embedding 輸入最多約 35 + 256 + 2 tokens。舊模型 MiniLM 必須預留，是因為 256 是它的硬性上限。
+
+**重新量測（2026-10-24，站台改為靜態 HTML，並加上 `## Recipes`）**：parent 候選 387 個，中位數 90、p95 433、最大 **1308**（`storage_cells` 的 `## Recipes`，該頁配方很多）；超過 1024 的只有這 1 個，因此上限改為 2048（見上方理由）。其餘最大為 1020（`storage-types` 的開頭段落）。`## Recipes` 共 85 個，中位數 48。最長段落仍為 237。上表為舊 HTML 的量測，僅供對照。
 
 模擬結果（2026-10-23，overlap 32，暫存環境）：parent 302 個（最大 832）；child 348 個（中位數 99.5、最大 255）；被切成多個 child 的 parent 29 個；不到 50 tokens 的 child 71 個（來自本身就很短的章節，與上限無關）。
 
@@ -97,7 +99,8 @@ version   = md_file.parent.parent.parent.name     # "1.21.1"
 - **單層固定大小切分**：無法利用指南的章節結構，日後有長篇文章時會從章節中間切斷。
 - **單層依章節切分**：章節長度落差大，長章節的向量語意會被稀釋。
 - **只用整頁當 parent**：多數頁面本身就比 child 還短，分層幾乎沒有作用；整頁最大 2645 tokens 也太大。
-- **2048／256**：日後 1024–2048 的長章節可保持完整，但 parent／child 比例最大 8 倍，成本較高、較不聚焦。現有資料上兩者結果相同，先採較保守的 1024，日後依評估調整。
+- **1024／256**（2026-10-23 曾採用）：交給 LLM 的上下文較省；但加上 `## Recipes` 後已有 1 個 parent（1308）超過上限，必須切開配方段。
+- **維持 1024，超過時依行切成多個 parent**：配方不會被切壞，但同一頁的配方會分散在多個 parent；改為 2048 較單純。
 - **2048／512**：最接近 LlamaIndex 的比例，但現有資料只會切開 10 個 parent，子母分層效果較弱。
 
 ## 5. 驗證方式
@@ -106,7 +109,7 @@ version   = md_file.parent.parent.parent.name     # "1.21.1"
 
 - 每筆可解析，provenance 欄位非空。
 - 每個 child 都能對應到 parent。
-- parent ≤ 1024、child ≤ 256 tokens（BGE-M3 tokenizer，只算正文）斷言通過。
+- parent ≤ 2048、child ≤ 256 tokens（BGE-M3 tokenizer，只算正文）斷言通過。
 - 欄位清單待 §6 定案後補入。
 
 ## 6. 待定事項與風險
@@ -114,7 +117,7 @@ version   = md_file.parent.parent.parent.name     # "1.21.1"
 | 事項 | 狀態 |
 | --- | --- |
 | child overlap、Recursive 切分點 | 實作時定義（模擬使用 overlap 32，即 child 的 12.5%；切分點 `"\n"`、`". "`、`" "`；業界常見 overlap 10–20%） |
-| parent 超過 1024 時的切法 | 實作時定義（建議先依 `###`，再依大小）；上限較低，日後長章節較容易碰到 |
+| parent 超過 2048 時的切法 | 實作時定義（建議依行邊界切成多個 parent，不從行中間切）；現有資料沒有超過的 parent |
 | 第一個 `##` 之前的開頭段落歸屬 | 實作時定義（建議獨立成 parent，`section` = 頁面標題） |
 | 極短 parent 是否合併 | 實作時定義 |
 | ID 格式（含跨 chapter 同名頁碰撞）、parent 產物的檔名與 schema | 實作時定義 |
@@ -122,7 +125,8 @@ version   = md_file.parent.parent.parent.name     # "1.21.1"
 
 風險：
 
-- **長章節會被切開**：新資料若出現超過 1024 tokens 的章節，章節上下文會斷開；若長章節變多，可依評估將上限提高到 2048。
+- **parent／child 比例最大 8 倍**：命中一個 256 的 child 時，可能送出最多 2048 tokens 的 parent；成本與聚焦度由檢索端的 top-k 與 parent 去重控制。
+- **超過 2048 的章節仍會被切開**：新資料若出現更長的章節，章節上下文會斷開。
 - **child 多切並非沒有成本**：同一 parent 的 child 容易佔滿 top-k，檢索端須依 parent 去重；過短的 child 語意較弱。
 - 上限只保證現有資料切分合理，**沒有經過檢索評估**。
 
