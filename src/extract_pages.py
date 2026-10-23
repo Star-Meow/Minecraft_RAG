@@ -1,7 +1,9 @@
 """[3] 抽取主文（trafilatura）。
 
-職責：從 [2] 抓回的 raw HTML 抽出主文，輸出含 title/text/source/hostname/http_status
+職責：從 [2] 抓回的 raw HTML 抽出主文，輸出含 title/text/markdown/source/hostname/http_status
 的 JSON；navigation_only 頁（導覽索引頁）跳過不輸出。
+markdown = text 加上標題記號：以 <article> 的 h1–h3 依序比對 text 中完全相同的行，
+加 '#' 前綴（層級照 HTML 原樣，不正規化、不判斷噪音；那是 [4] 的職責，見 ADR-004）。
 另產出人類可讀的 .md 衍生物（data/processed/extracted_readable/），供驗收閱讀；
 真值仍以 JSON 為準，.md 寫入失敗只記 warning，不影響 exit code。
 
@@ -49,8 +51,11 @@ READABLE_INDEX_PATH = READABLE_DIR / "_index.md"
 NAV_MIN_TEXT_LENGTH = 200     # 抽出文字少於此字元數 → 疑似導覽頁
 NAV_MAX_LINK_DENSITY = 0.5    # <article> 內連結密度高於此 → 疑似導覽頁
 
-# extracted JSON 欄位：只保留 trafilatura 原始輸出 + http_status（AGENTS.md §7）
+# extracted JSON 欄位：trafilatura 原始輸出 + markdown（標題記號）+ http_status（AGENTS.md §7）
 EXTRACTED_FIELDS = ("title", "text", "source", "hostname")
+
+# 標題結構：只取 <article> 內 h1–h3（ADR-004）
+HEADING_TAGS = ("h1", "h2", "h3")
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +135,48 @@ def link_density(html: str) -> float:
     return len(link_text) / len(total_text)
 
 
+def article_headings(html: str) -> list:
+    """回傳 <article> 內 h1–h3 的 (level, text)，依文件順序。無 <article> → 空清單。
+
+    BeautifulSoup 在此用於讀取標題結構（ADR-004），不用於導覽發現。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.find("article")
+    if article is None:
+        return []
+    headings = []
+    for tag in article.find_all(list(HEADING_TAGS)):
+        text = tag.get_text(" ", strip=True)
+        if text:
+            headings.append((int(tag.name[1]), text))
+    return headings
+
+
+def build_markdown(text: str, headings: list) -> tuple:
+    """把 headings 依序對應到 text 中完全相同（去前後空白）的行，加 '#' 前綴。
+
+    游標只往下找；找不到的標題不移動游標、記入 unmatched。
+    回傳 (markdown, matched 數, unmatched 清單[(level, text)])。
+    """
+    lines = text.split("\n")
+    cursor = 0
+    matched = 0
+    unmatched = []
+    for level, heading in headings:
+        found = -1
+        for i in range(cursor, len(lines)):
+            if lines[i].strip() == heading:
+                found = i
+                break
+        if found < 0:
+            unmatched.append((level, heading))
+            continue
+        lines[found] = "#" * level + " " + heading
+        cursor = found + 1
+        matched += 1
+    return "\n".join(lines), matched, unmatched
+
+
 def is_navigation_only(url: str, extracted: dict, html: str) -> tuple:
     """綜合判定是否為 navigation_only 頁。回傳 (是否命中, 原因字串)。"""
     if is_index_page(url):
@@ -152,17 +199,18 @@ def extracted_output_path(local_path: str) -> Path:
     路徑結構沿用 [2] 寫入的 <version>/<mod_slug>/<chapter>/<page_slug> 分層；
     chapter/page_slug 不重新計算，完全由 [2] 的路徑決定（權威來源分離）。
     """
-    rel = local_path[len("data/raw/"):]               # 去掉 data/raw/ 前綴
-    rel_json = rel[:-len(".html")] + ".json"          # .html -> .json
-    return EXTRACTED_DIR / rel_json
+    rel = (PROJECT_ROOT / local_path).relative_to(RAW_DIR)    # 去掉 data/raw/ 前綴
+    return EXTRACTED_DIR / rel.with_suffix(".json")
 
 
-def build_extracted_record(extracted: dict, http_status) -> dict:
-    """組 extracted JSON：只放 trafilatura 原始欄位 + http_status。
+def build_extracted_record(extracted: dict, markdown: str, http_status) -> dict:
+    """組 extracted JSON：trafilatura 原始欄位 + markdown + http_status。
 
+    text 保留 trafilatura 原值不異動；markdown 為 text 加標題記號的版本。
     不加 page_slug/chapter（[5] 從路徑讀）；hostname 保留 trafilatura 原值不修正。
     """
     record = {field: extracted.get(field) for field in EXTRACTED_FIELDS}
+    record["markdown"] = markdown
     record["http_status"] = http_status
     return record
 
@@ -201,9 +249,8 @@ def readable_output_path(local_path: str) -> Path:
 
     與 extracted JSON 完全同構（路徑鏡像，僅頂層目錄與副檔名不同）。
     """
-    rel = local_path[len("data/raw/"):]               # 去掉 data/raw/ 前綴
-    rel_md = rel[:-len(".html")] + ".md"              # .html -> .md
-    return READABLE_DIR / rel_md
+    rel = (PROJECT_ROOT / local_path).relative_to(RAW_DIR)    # 去掉 data/raw/ 前綴
+    return READABLE_DIR / rel.with_suffix(".md")
 
 
 def build_readable_md(record: dict) -> str:
@@ -291,7 +338,19 @@ def write_extraction_report(path: Path, manifest: dict, stats: dict) -> None:
     lines.append(f"- parsed（已輸出 extracted JSON）：{stats['parsed_count']}")
     lines.append(f"- skipped（navigation_only）：{len(stats['skipped'])}")
     lines.append(f"- errors：{len(stats['errors'])}")
+    lines.append(f"- 標題對應（<article> h1–h3 → markdown）：matched {stats['headings_matched']}"
+                 f"／unmatched {len(stats['headings_unmatched'])}")
     lines.append("")
+
+    if stats["headings_unmatched"]:
+        lines.append("## 未對應標題（text 中找不到完全相同的行，markdown 不加記號）")
+        lines.append("")
+        lines.append("| URL | level | heading |")
+        lines.append("| --- | --- | --- |")
+        for u in stats["headings_unmatched"]:
+            heading = u["heading"].replace("|", "\\|")
+            lines.append(f"| {u['url']} | h{u['level']} | {heading} |")
+        lines.append("")
 
     if stats["skipped"]:
         lines.append("## Skipped（navigation_only）")
@@ -345,6 +404,8 @@ def main() -> int:
     index_rows = []        # _index.md 的資料列（只列成功輸出 JSON 的頁）
     parsed_detail = []
     parsed_count = 0
+    headings_matched = 0
+    headings_unmatched = []  # 標題對應不到 text 的行（報告用，不影響 exit code）
 
     for entry in html_entries:
         url = entry["url"]
@@ -365,7 +426,14 @@ def main() -> int:
             print(f"  SKIP {url} -> {reason}")
             continue
 
-        record = build_extracted_record(extracted, entry.get("http_status"))
+        # 標題結構：<article> h1–h3 依序對應 text 的行，產生 markdown
+        markdown, matched, unmatched = build_markdown(extracted.get("text") or "",
+                                                      article_headings(html))
+        headings_matched += matched
+        for level, heading in unmatched:
+            headings_unmatched.append({"url": url, "level": level, "heading": heading})
+
+        record = build_extracted_record(extracted, markdown, entry.get("http_status"))
         out_path = extracted_output_path(entry["local_path"])
         write_json(out_path, record)
         parsed_count += 1
@@ -413,6 +481,8 @@ def main() -> int:
         "warnings": warnings,
         "errors": errors,
         "parsed_detail": parsed_detail,
+        "headings_matched": headings_matched,
+        "headings_unmatched": headings_unmatched,
     }
     write_parse_report(PARSE_REPORT_PATH, parsed_count, skipped, errors, warnings)
     write_extraction_report(EXTRACTION_REPORT_PATH, manifest, stats)
