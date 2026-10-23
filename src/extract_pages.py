@@ -3,7 +3,7 @@
 職責：從 [2] 抓回的 raw HTML 抽出主文，輸出含 title/text/markdown/source/hostname/http_status
 的 JSON；navigation_only 頁（導覽索引頁）跳過不輸出。
 markdown = text 加上標題記號：以 <article> 的 h1–h3 依序比對 text 中完全相同的行，
-加 '#' 前綴（層級照 HTML 原樣，不正規化、不判斷噪音；那是 [4] 的職責，見 ADR-004）。
+加 '#' 前綴（層級照 HTML 原樣，不正規化、不判斷噪音；那是 [4] 的職責，見 docs/02_extract.md）。
 另產出人類可讀的 .md 衍生物（data/processed/extracted_readable/），供驗收閱讀；
 真值仍以 JSON 為準，.md 寫入失敗只記 warning，不影響 exit code。
 
@@ -54,7 +54,7 @@ NAV_MAX_LINK_DENSITY = 0.5    # <article> 內連結密度高於此 → 疑似導
 # extracted JSON 欄位：trafilatura 原始輸出 + markdown（標題記號）+ http_status（AGENTS.md §7）
 EXTRACTED_FIELDS = ("title", "text", "source", "hostname")
 
-# 標題結構：只取 <article> 內 h1–h3（ADR-004）
+# 標題結構：只取 <article> 內 h1–h3（docs/02_extract.md）
 HEADING_TAGS = ("h1", "h2", "h3")
 
 
@@ -116,7 +116,7 @@ def link_density(html: str) -> float:
     被誤判為導覽頁。<article> 才是真正的主文區，側邊欄與頁首導覽都在它之外。
 
     BeautifulSoup 在此只用於 leaf page 內容的連結密度計算，不用於導覽發現
-    （見 ADR-001 與 AGENTS.md §8）。
+    （見 docs/02_extract.md 與 AGENTS.md §8）。
     """
     soup = BeautifulSoup(html, "html.parser")
     article = soup.find("article")
@@ -138,7 +138,7 @@ def link_density(html: str) -> float:
 def article_headings(html: str) -> list:
     """回傳 <article> 內 h1–h3 的 (level, text)，依文件順序。無 <article> → 空清單。
 
-    BeautifulSoup 在此用於讀取標題結構（ADR-004），不用於導覽發現。
+    BeautifulSoup 在此用於讀取標題結構（docs/02_extract.md），不用於導覽發現。
     """
     soup = BeautifulSoup(html, "html.parser")
     article = soup.find("article")

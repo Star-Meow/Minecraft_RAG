@@ -1,11 +1,12 @@
 # AGENTS.md — Project Engineering Contract
 
 本文件是 AI Agent 在本專案中工作的永久工程契約：規定**行為邊界、不變式與驗收方式**。
-各階段的 I/O、欄位與規則細節以 `ARCHITECTURE.md` 為單一事實來源，本文件只引用、不重述。
+架構地圖見 `ARCHITECTURE.md`；各模塊的 I/O、欄位、規則與決策理由以 `docs/` 的模塊文件為單一事實來源，本文件只引用、不重述。
 本文件不記錄會隨時間變動的專案狀態（進度、頁數、實測數字）。
 
-- 目標架構與契約：`ARCHITECTURE.md`
-- 決策理由：`docs/adr/`
+- 架構地圖（模塊、邊界、不變式）：`ARCHITECTURE.md`
+- 各模塊的契約與決策理由：`docs/01_fetch.md`～`docs/06_index.md`
+- 疑難排解：`docs/07_troubleshooting.md`
 - 人類使用說明與開發狀態：`README.md`
 
 ## 1. Project Mission
@@ -32,7 +33,7 @@ Agent 不得自行擴張以下範圍：新增資料來源類型、加入 modpack
 1. 使用者當前明確指令
 2. 本 AGENTS.md
 3. 全域 skill（harness 層級，不存於本 repo）
-4. `ARCHITECTURE.md` 與 Accepted 狀態的 ADR
+4. `ARCHITECTURE.md` 與 `docs/` 模塊文件
 5. `README.md`
 6. 既有程式碼風格與一般工程慣例
 
@@ -69,10 +70,10 @@ Agent 必須區分以下資訊來源：
 
 | 類別 | 來源 | 用途 |
 | --- | --- | --- |
-| Normative（應該怎麼做） | `AGENTS.md`；`ARCHITECTURE.md` 的契約；Accepted 的 ADR | 規則與契約 |
+| Normative（應該怎麼做） | `AGENTS.md`；`ARCHITECTURE.md`；`docs/` 模塊文件的契約 | 規則與契約 |
 | Current State（實際狀況） | 程式碼、資料產物、Git 狀態、重新執行的檢查 | 判斷是否已實作、是否正確 |
-| Target State（目標狀態） | `ARCHITECTURE.md` | 目標架構；不是進度。不得因某階段列在其中就假設已實作 |
-| 過程文件（非規範、非現況） | `docs/plans/`、`reports/`、根目錄的交接或筆記檔 | 只作為線索；引用前必須以實際檔案重新驗證 |
+| Target State（目標狀態） | `ARCHITECTURE.md`、`docs/` 模塊文件 | 目標架構；不是進度。不得因某模塊列在其中就假設已實作 |
+| 過程文件（非規範、非現況） | `reports/`、README 的專案狀態、根目錄的交接或筆記檔 | 只作為線索；引用前必須以實際檔案重新驗證 |
 
 **Unknown Rule**：無法由實際檔案、程式碼、資料產物或規範文件確認的資訊：
 
@@ -81,7 +82,7 @@ Agent 必須區分以下資訊來源：
 
 ## 5. Repository Map
 
-完整目錄見 `ARCHITECTURE.md` §4。
+模塊地圖見 `ARCHITECTURE.md` §3。
 
 | Path | Responsibility |
 | --- | --- |
@@ -94,8 +95,9 @@ Agent 必須區分以下資訊來源：
 | `src/index_chunks.py` | [7] 寫入 pgvector（擱置） |
 | `data/` | pipeline 產物 |
 | `reports/` | 各階段的單次報告 |
-| `docs/adr/` | Architecture Decision Records |
-| `docs/plans/` | 過程文件（非規範，不入版控、不作為依據） |
+| `ARCHITECTURE.md` | 架構地圖 |
+| `docs/01`～`06_*.md` | 各模塊的契約、方法、決策理由、驗證方式、待定事項 |
+| `docs/07_troubleshooting.md` | 疑難排解（只追加） |
 | `pyproject.toml`／`requirements.txt` | 專案 metadata 與依賴 |
 | `.env.example` | 環境變數範本（實際 `.env` 由本地提供，不入版控） |
 
@@ -103,16 +105,16 @@ pipeline 模組一律放在 `src/`，以 `PROJECT_ROOT = Path(__file__).resolve(
 
 ## 6. Pipeline Contract
 
-管線為單向資料流，各階段可獨立重跑，正式產物整份覆寫。各階段的完整契約（步驟、欄位、規則、失敗處理）見 `ARCHITECTURE.md` §5；模塊邊界原則見 `ARCHITECTURE.md` §3。
+管線為單向資料流，各階段可獨立重跑，正式產物整份覆寫。各階段的完整契約（步驟、欄位、規則、失敗處理）見 `docs/` 對應的模塊文件；模塊邊界原則見 `ARCHITECTURE.md` §4。
 
 | Stage | Input | Output | 不可破壞的約束 |
 | --- | --- | --- | --- |
 | [1] 入口 | 人工維護 | `sources.json` | 入口頁只推導站台根，不抓取；版本取自 `version` 欄位 |
-| [2] 抓取 | `sources.json` + sitemap.xml | `data/raw/<version>/<mod_slug>/<chapter>/*.html`、`_manifest.json` | URL 真值來源只有 sitemap.xml，無可用 sitemap → fail-fast，不 fallback（ADR-001）；不解析導覽 DOM；路徑三元素只在 [2] 計算 |
-| [3] 抽取 | raw HTML + `_manifest.json` | `extracted/**/*.json`、報告、人類可讀衍生物 | trafilatura 原始欄位不異動；`markdown` 只加標題記號（ADR-004）；navigation_only 頁不輸出 |
-| [4] 清理 | extracted JSON | `cleaned/**/*.md`、`cleaning_report.md` | 噪音規則依 ADR-002、標題正規化依 ADR-004、空章節移除依 ADR-006；規則只作用於正文；被排除的頁不輸出、以報告為憑 |
-| [5] 切分 | cleaned MD | child chunks + parent 文件 | 只讀 cleaned MD；子母分層（ADR-005）；以 BGE-M3 tokenizer 計數並斷言上限（ADR-007）；`source_url` 為空的頁不產出 |
-| [6] Embedding | child chunks | child + 向量 | BGE-M3、1024 維、正規化、revision 鎖定（ADR-003）；與輸入逐筆對應 |
+| [2] 抓取 | `sources.json` + sitemap.xml | `data/raw/<version>/<mod_slug>/<chapter>/*.html`、`_manifest.json` | URL 真值來源只有 sitemap.xml，無可用 sitemap → fail-fast，不 fallback（`docs/01_fetch.md`）；不解析導覽 DOM；路徑三元素只在 [2] 計算 |
+| [3] 抽取 | raw HTML + `_manifest.json` | `extracted/**/*.json`、報告、人類可讀衍生物 | trafilatura 原始欄位不異動；`markdown` 只加標題記號（`docs/02_extract.md`）；navigation_only 頁不輸出 |
+| [4] 清理 | extracted JSON | `cleaned/**/*.md`、`cleaning_report.md` | 噪音規則、標題正規化、空章節移除依 `docs/03_clean.md`；規則只作用於正文；被排除的頁不輸出、以報告為憑 |
+| [5] 切分 | cleaned MD | child chunks + parent 文件 | 只讀 cleaned MD；子母分層；以 BGE-M3 tokenizer 計數並斷言上限（`docs/04_chunk.md`）；`source_url` 為空的頁不產出 |
+| [6] Embedding | child chunks | child + 向量 | BGE-M3、1024 維、正規化、revision 鎖定（`docs/05_embed.md`）；與輸入逐筆對應 |
 | [7] 入庫 | [6] 向量 + [5] parent | PostgreSQL + pgvector | **擱置**：schema、入庫方式、索引不得預先定義 |
 
 Pipeline invariants（跨階段不可破壞）：
@@ -123,7 +125,7 @@ Pipeline invariants（跨階段不可破壞）：
 
 ## 7. Data Rules
 
-欄位定義見 `ARCHITECTURE.md` §5。以下為不可放寬的資料規則：
+欄位定義見各模塊文件的「輸入與輸出」。以下為不可放寬的資料規則：
 
 - **`title` 不異動**：extracted JSON 的 `title` 經 cleaned MD frontmatter 原封帶入 chunk；下游直接用 chunk 的 `title`，不回查 JSON。
 - **trafilatura 原始欄位不異動**：`title`／`text`／`source`／`hostname` 保留原值；`markdown` 去掉標題記號後必須逐行等於 `text`。
@@ -171,7 +173,7 @@ Pipeline invariants（跨階段不可破壞）：
 - remote repository creation（一律 private，只有使用者明確要求才可 public）
 - 修改知識來源（`sources.json`）
 - 寫入專案根目錄之外的路徑（含全域 `~/.codex/skills/`）
-- 刪除既有資料產物或既有檔案。例外：[4] 依 `ARCHITECTURE.md` §5 [4] 重建 `cleaned/<version>/`（範圍限定該版本子樹、有路徑斷言、處理完成後才清空）。其他階段如需比照，須另行授權。
+- 刪除既有資料產物或既有檔案。例外：[4] 依 `docs/03_clean.md` 重建 `cleaned/<version>/`（範圍限定該版本子樹、有路徑斷言、處理完成後才清空）。其他階段如需比照，須另行授權。
 
 例外：檢查 `.gitignore` 內容，以及用 `git status`／`git ls-files` 確認敏感檔案的版控狀態，不屬於禁止項。
 
@@ -190,8 +192,8 @@ Pipeline invariants（跨階段不可破壞）：
 - 下載模型或其他大型檔案（說明來源與大小）。
 - 修改資料來源（`sources.json`）。
 - 刪除或搬移既有檔案。
-- 修改 [4] 噪音規則或標題正規化規則（規則、白名單、門檻；見 ADR-002、ADR-004、ADR-006）。
-- 定義 `ARCHITECTURE.md` 標示為「待定」或「擱置」的項目（如 [5] 參數與 ID、[7] schema）。
+- 修改 [4] 噪音規則或標題正規化規則（規則、白名單、門檻；見 `docs/03_clean.md`）。
+- 定義模塊文件標示為「待定」或「擱置」的項目（如 [5] overlap 與 ID、[7] schema）。
 - §9 全部 Sensitive Operations。
 - 讀取環境變數、系統診斷、硬體狀態等敏感系統資訊。
 
@@ -206,7 +208,7 @@ Pipeline invariants（跨階段不可破壞）：
 ## 11. Task Start Protocol
 
 1. 閱讀 AGENTS.md。
-2. 視任務需要閱讀 `ARCHITECTURE.md`（涉及契約時）、相關 ADR（涉及決策理由時）、`README.md`（涉及使用者操作時）。
+2. 視任務需要閱讀 `ARCHITECTURE.md`（涉及模塊邊界時）、`docs/` 模塊文件（涉及契約或決策理由時）、`README.md`（涉及使用者操作時）。
 3. 定位相關模組（§5）。
 4. 判斷最小必要變更範圍與對應驗證方式（§13）。
 5. 檢查是否觸及 decision boundary（§9／§10）。
@@ -249,10 +251,10 @@ Agent 不得宣稱未執行的驗證為成功。
 | [2] Fetch | `python src/fetch_pages.py` | `_manifest.json` 存在且每頁記錄 `http_status`；結束碼 0（有失敗記錄時為 1，須如實回報） |
 | [3] Extract | `python src/extract_pages.py` | 每份 `extracted/*.json` 可解析，含 `title`／`source`／非空 `text`／`markdown`；`markdown` 去掉標題記號後逐行等於 `text`；`extraction_report.md` 產出，標出 `source`（與 `title`）為空的頁與未對應的標題；`extracted_readable/*.md` 數 = `parsed_count`，`_index.md` 產出 |
 | [4] Clean | `python src/clean_pages.py` | `cleaned/*.md` 產出、非空，含 frontmatter（至少 `title`、`source_url`），frontmatter 與 `# <title>` 之間有空行；每頁恰好一個 `#`，沒有白名單標籤的標題行，沒有空章節（標題底下必有內容）；被契約排除的頁不產出檔案，以 `cleaning_report.md` 為憑；**對帳：輸出頁數 + 報告列出的跳過頁數 = 輸入頁數**；輸出每一行去掉標題記號後，是某個輸入行或其子字串（純刪除檢查）；連跑兩次輸出相同 |
-| [5] Chunk | `python src/chunk_pages.py` | 至少：每筆可解析且 provenance 欄位非空；每個 child 都能對應到 parent；parent ≤ 1024、child ≤ 256 tokens（BGE-M3 tokenizer，只算正文；ADR-007）斷言通過。欄位清單待 `ARCHITECTURE.md` 定案後補入 |
+| [5] Chunk | `python src/chunk_pages.py` | 至少：每筆可解析且 provenance 欄位非空；每個 child 都能對應到 parent；parent ≤ 1024、child ≤ 256 tokens（BGE-M3 tokenizer，只算正文）斷言通過。欄位清單待 `docs/04_chunk.md` 定案後補入 |
 | [6] Embed | `python src/embed_chunks.py` | 每筆 1024 維、norm = 1、`model_revision` 非空；與輸入 child 逐筆對應（順序與 ID 一致、metadata 不變） |
 | [7] Index | 待 schema 定義後補入 | 待定 |
-| Documentation | 人工核對 | 文內事實（路徑、檔名、規則引用）與實際狀況一致；契約只在 `ARCHITECTURE.md` §5 定義一次；§2 架構圖與 §5 一致 |
+| Documentation | 人工核對 | 文內事實（路徑、檔名、規則引用）與實際狀況一致；每個格式只在產出它的模塊文件定義一次；`ARCHITECTURE.md` 的模塊地圖與模塊文件一致 |
 
 框架層級決策（§16）：採 grill-me 模式逐項提問，待使用者決策後再實作。
 
@@ -260,21 +262,22 @@ Agent 不得宣稱未執行的驗證為成功。
 
 | 文件 | 只放 | 不放 |
 | --- | --- | --- |
-| `AGENTS.md` | Agent 行為規則、權限邊界、不變式、驗收標準 | 欄位與參數細節（引用 `ARCHITECTURE.md`）、進度、實測數字 |
-| `ARCHITECTURE.md` | 目標架構與契約的單一事實來源：各階段 I/O、欄位、規則、參數、待確認事項 | 進度、實測數字與日期、歷史紀錄、Agent 行為禁令 |
-| `docs/adr/` | 單一決策的背景、決策、否決方案、後果，以及決策當下的實測證據 | 與該決策無關的其他決策 |
-| `README.md` | 專案介紹、文件導覽、安裝與執行方式、**開發狀態**（唯一記錄進度之處） | 欄位級契約、決策理由全文 |
-| `docs/plans/`、`reports/` | 過程文件與執行報告 | 規範（不得被當作規則引用） |
+| `README.md` | 入口：專案介紹、架構簡圖、安裝與執行、文件導覽；開發期間暫時保留專案狀態（專案完成後移除） | 欄位級契約、決策理由 |
+| `ARCHITECTURE.md` | 架構地圖：概覽、架構簡圖、模塊地圖、邊界原則、不變式（含刻意不做的事）、跨模塊共通事項 | 各模塊的實作細節、實測數字、進度、Agent 行為禁令 |
+| `docs/01`～`06_*.md` | 每個模塊一份：輸入與輸出（格式只在此定義）、處理方法、為什麼這樣做（含實測證據與人工裁定）、否決的方案、驗證方式、待定事項 | 其他模塊的格式（只引用）、進度 |
+| `docs/07_troubleshooting.md` | 坑紀錄（現象、根因、處置、證據）與症狀速查；只追加不改寫 | 過程敘事 |
+| `AGENTS.md` | Agent 行為規則、權限邊界、不變式、驗收標準 | 欄位與參數細節（引用模塊文件）、進度、實測數字 |
+| `reports/` | 程式產生的單次報告（不入版控） | 規範（不得被當作規則引用） |
 
-- ADR 一經 Accepted 即不改寫結論；變更決策時新增 ADR，並在舊 ADR 標註被部分或全部取代。
-- 契約變更時，同步更新 `ARCHITECTURE.md`（§5 契約與 §2 各模塊架構圖須在同一次變更中一起更新），必要時新增 ADR；`AGENTS.md` 只在行為規則或不變式變動時更新。
-- `ARCHITECTURE.md` §2 架構圖由 §5 衍生，範例僅為示意；兩者衝突時以 §5 為準。
+- 不另立決策日誌：決策與否決的方案寫在受影響模塊文件的「為什麼這樣做」與「否決的方案」；跨模塊的決策寫在負責執行的模塊，其他模塊只放一行連結。
+- 參數調整、既有規則的小增補：更新對應的模塊文件即可。
+- 契約變更時，同步更新對應的模塊文件；模塊、資料流或不變式改變時，同步更新 `ARCHITECTURE.md`；`AGENTS.md` 只在行為規則或不變式變動時更新。
 
 ## 15. Handoff Protocol
 
 完成一個重要階段時：
 
-- 若有重大架構決策，同步更新 `ARCHITECTURE.md`、相關 ADR，以及 `README.md` 的開發狀態。
+- 若有重大架構決策，同步更新對應的模塊文件、必要時更新 `ARCHITECTURE.md`，以及 `README.md` 的專案狀態。
 - 依 §17 回報：修改了什麼、驗證了什麼、尚未驗證什麼、已知風險、需要使用者決策的事項。
 
 ## 16. Architecture Change Protocol
@@ -289,8 +292,8 @@ Agent 不得宣稱未執行的驗證為成功。
 - 修改資料來源策略
 - 引入新的 agent framework
 - 大型目錄重構
-- 修改 [4] 噪音規則或標題正規化規則（須經人工裁定並新增或更新 ADR）
-- 定義 [7] schema（`ARCHITECTURE.md` 明示擱置）
+- 修改 [4] 噪音規則或標題正規化規則（須經人工裁定，並更新 `docs/03_clean.md` 的規則與裁定紀錄）
+- 定義 [7] schema（`docs/06_index.md` 明示擱置）
 
 應採用 **Grill-me mode**：
 
@@ -317,4 +320,4 @@ Agent 不得宣稱未執行的驗證為成功。
 - Do not turn temporary state into permanent policy.
 - Do not claim validation that was not performed.
 - When evidence is insufficient, say so.
-- 當 `ARCHITECTURE.md` 明示某項「待定／擱置」時，不得為其虛構細節。
+- 當文件明示某項「待定／擱置」時，不得為其虛構細節。

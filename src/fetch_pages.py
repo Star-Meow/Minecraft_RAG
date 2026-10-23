@@ -1,7 +1,7 @@
 """[2] 抓取 raw HTML。
 
 職責：只做網路 I/O 與路徑三元素解析；不做 HTML->MD 轉換，也不解析導覽 DOM。
-URL 真值來源：sitemap.xml（robust 探測，見 docs/adr/ADR-001-sitemap-as-url-source.md）。
+URL 真值來源：sitemap.xml（robust 探測，見 docs/01_fetch.md）。
 
 設計原則：
 - 模組化：每個函式單一職責，main() 只做編排。
@@ -197,7 +197,7 @@ def filter_version_urls(urls: list, version: str) -> list:
 def parse_path_elements(url: str, version: str) -> dict:
     """解析 chapter 與 page_slug；mod_slug 另由 sources.json 的 mod 產生。
 
-    規則（ARCHITECTURE.md §4 [2]）：
+    規則（docs/01_fetch.md）：
     - 去掉 /{version}/ 前綴後，1 段 -> chapter='other'，page_slug=該段
     - >=2 段 -> chapter=倒數第二段，page_slug=最後一段
     - URL 本身已是 slug，不另行 slug 化（只用在路徑與命名）
@@ -298,7 +298,7 @@ def write_manifest(path: Path, sources: dict, mod_slug: str, entries: list) -> N
         "version": sources["version"],
         "mod": sources["mod"],        # 原名，與 mod_slug 並存以便追溯
         "mod_slug": mod_slug,
-        "source": "sitemap",          # URL 發現來源（ADR-001）
+        "source": "sitemap",          # URL 發現來源（docs/01_fetch.md）
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "urls": entries,
     }

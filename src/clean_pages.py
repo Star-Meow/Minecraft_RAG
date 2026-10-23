@@ -4,10 +4,10 @@
 過濾 trafilatura 誤留的噪音，輸出含 frontmatter 與 H1 的 cleaned MD
 （data/processed/cleaned/<version>/<mod_slug>/<chapter>/<page>.md），
 並產生 reports/cleaning_report.md。
-規則一律以「去掉標題記號後的行內容」比對；標題行與一般行套用相同規則（ADR-004）。
+規則一律以「去掉標題記號後的行內容」比對；標題行與一般行套用相同規則（docs/03_clean.md）。
 
 「無圖片版本」前提：本站的配方以圖片呈現，trafilatura 抽出後只剩標籤文字空殼。
-規則依目前這批資料校準；網站加入圖片相關內容後須重新盤點（見 ADR-002）。
+規則依目前這批資料校準；網站加入圖片相關內容後須重新盤點（見 docs/03_clean.md）。
 
 規則集（有序，AGENTS.md §6 [4]）：
 - R2 跳轉頁排除：首行 == 站名 且 全頁文字長度 < 門檻 → 不輸出
@@ -16,8 +16,8 @@
 - R4b 黏合尾端標籤：行尾黏合的標籤序列，自第一個 Recipe/Recipes 起到行尾
   全為標籤詞才切除；切除後該行必須仍有內容
 - R6 標題層級正規化：頁內剩餘標題依相對深度輸出為 ##／###／####
-  （整頁只保留 [4] 寫入的 # <title>；多 H1 頁的頁內 H1 → ##、其下 H2 → ###，見 ADR-004）
-- R7 空章節移除：沒有任何內容的標題（R4a 刪光標籤後的殘留）一併刪除（ADR-006）
+  （整頁只保留 [4] 寫入的 # <title>；多 H1 頁的頁內 H1 → ##、其下 H2 → ###，見 docs/03_clean.md）
+- R7 空章節移除：沒有任何內容的標題（R4a 刪光標籤後的殘留）一併刪除（docs/03_clean.md）
 - 空 body 守衛：規則處理後 body 為空 → 不輸出；不足 200 字元 → 輸出但標示
 
 不處理：孤立 `-`、句子之間的黏合、相鄰表格、段落空行（僅計數與記錄）。
@@ -46,7 +46,7 @@ SOURCES_PATH = PROJECT_ROOT / "sources.json"
 REPORT_PATH = REPORTS_DIR / "cleaning_report.md"
 
 SITE_NAME = "Applied Energistics 2"
-REDIRECT_MAX_LENGTH = 110        # R2 門檻（人工裁定，依據見 ADR-002）
+REDIRECT_MAX_LENGTH = 110        # R2 門檻（人工裁定，依據見 docs/03_clean.md）
 SHORT_BODY_THRESHOLD = 200       # body 短於此字元數 → 報告標示（仍輸出）
 
 # 配方標籤白名單。排列順序為「長 token 優先」，是 R4b 貪婪切割的必要條件
@@ -70,7 +70,7 @@ METHOD_LABELS = LABEL_SET - GENERIC_LABELS
 # cleaned MD 輸出一律 LF（[4] 是第一個 LF 產物；[3] 的衍生物在 Windows 上為 CRLF）
 NEWLINE = "\n"
 
-# [3] markdown 欄位的標題行：'#'×level + 空格 + 標題文字（ADR-004）
+# [3] markdown 欄位的標題行：'#'×level + 空格 + 標題文字（docs/02_extract.md）
 HEADING_RE = re.compile(r"^(#{1,6}) (.*)$")
 MIN_SUB_LEVEL = 2                # R6：頁內標題最高只到 ##（# 保留給 <title>）
 
@@ -254,7 +254,7 @@ def strip_glued_label_tail(lines: list) -> tuple:
 def find_suspect_labels(lines: list) -> list:
     """疑似新標籤：長度 ≤ 40、不在白名單、不以 '- ' 開頭，且與白名單行相鄰。
 
-    僅列出供人工判斷，不自動刪除（清單與門檻依本批校準，見 ADR-002）。
+    僅列出供人工判斷，不自動刪除（清單與門檻依本批校準，見 docs/03_clean.md）。
     須在 R4a 刪除前行算「相鄰」關係，故只由 process_page 在 R1 之後呼叫。
     """
     label_idx = {i for i, ln in enumerate(lines) if content_of(ln).strip() in LABEL_SET}
@@ -300,7 +300,7 @@ def normalize_heading_levels(lines: list) -> tuple:
 
 
 def drop_empty_sections(lines: list) -> tuple:
-    """R7：刪除沒有任何內容的標題（R4a 刪光標籤後留下的空章節，見 ADR-006）。
+    """R7：刪除沒有任何內容的標題（R4a 刪光標籤後留下的空章節，見 docs/03_clean.md）。
 
     標題的範圍到下一個「同層或更高層」標題為止；範圍內只要有一行非空白的
     非標題行，就不算空。由深到淺判定，所以只含空子章節的章節也一併刪除。
@@ -347,7 +347,7 @@ def process_page(record: dict) -> tuple:
     title = record.get("title") or ""
     source = record.get("source") or ""
     markdown = record.get("markdown") or ""
-    # R2 門檻與字元統計沿用 ADR-002 的校準基準：不含標題記號的純文字
+    # R2 門檻與字元統計沿用 docs/03_clean.md 的校準基準：不含標題記號的純文字
     text = "\n".join(content_of(ln) for ln in markdown.split("\n"))
     log = {
         "title": title,
@@ -532,7 +532,7 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
 
     lines.append(f"# [4] 清理報告 — {sources['version']} / {sources['mod']}")
     lines.append("")
-    lines.append("- 規則依「無圖片版本」的抽取結果校準；定義與決策見 `docs/adr/ADR-002`、`ADR-004`（標題結構）、`ADR-006`（空章節）")
+    lines.append("- 規則依「無圖片版本」的抽取結果校準；定義與決策見 `docs/03_clean.md`")
     lines.append("- 前提：配方以圖片呈現，本批只清圖片被拿掉後留下的標籤空殼")
     lines.append("")
 
@@ -723,7 +723,7 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
     lines.append("")
     lines.append("**Limitations（只記錄，不處理）**")
     lines.append("")
-    lines.append("- 小標題來自 [3] 的標題對應（ADR-004）；[3] 對應不到的標題不會出現在輸出")
+    lines.append("- 小標題來自 [3] 的標題對應（docs/02_extract.md）；[3] 對應不到的標題不會出現在輸出")
     lines.append("- 無段落空行（trafilatura json 模式不保留）")
     lines.append("- 配方材料資訊在目前資料中缺失（材料在原網頁的圖片／屬性裡，[3] 未抽出）")
     lines.append("- 孤立 `-` 未處理（見第 6 節）")
