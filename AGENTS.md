@@ -21,6 +21,7 @@
 
 - **包含（MVP）**：官方指南頁面的抓取、抽取、清理、切分、向量索引、附來源問答、展示介面。
 - **不包含**：modpack JAR 解析、KubeJS／CraftTweaker 覆寫解析、多模組支援、帳號系統、雲端部署、多 Agent。
+- **目前契約涵蓋範圍**：資料準備（抓取到入庫）。核心查詢（檢索與回答）與 UI 屬於 MVP，但其契約後續再納入；在此之前依 §8 的已定技術，不預先定義細節。
 
 ### 1.3 Non-goals
 
@@ -32,8 +33,8 @@ Agent 不得自行擴張以下範圍：新增資料來源類型、加入 modpack
 
 1. 使用者當前明確指令
 2. 本 AGENTS.md
-3. 全域 skill（harness 層級，不存於本 repo）
-4. `ARCHITECTURE.md` 與 `docs/` 模塊文件
+3. `ARCHITECTURE.md` 與 `docs/` 模塊文件
+4. 全域 skill（harness 層級，不存於本 repo；專案文件未規定時才適用）
 5. `README.md`
 6. 既有程式碼風格與一般工程慣例
 
@@ -84,22 +85,22 @@ Agent 必須區分以下資訊來源：
 
 模塊地圖見 `ARCHITECTURE.md` §3。
 
-| Path | Responsibility |
-| --- | --- |
-| `sources.json` | [1] 入口設定（版本、模組原名、入口 URL）；可被各階段共用讀取 |
-| `src/fetch_pages.py` | [2] 抓取 raw HTML（只做網路 I/O） |
-| `src/extract_pages.py` | [3] 抽取主文與標題結構 |
-| `src/clean_pages.py` | [4] 清理與標題層級正規化 |
-| `src/chunk_pages.py` | [5] 子母分層切分（目標狀態） |
-| `src/embed_chunks.py` | [6] Embedding（目標狀態） |
-| `src/index_chunks.py` | [7] 寫入 pgvector（擱置） |
-| `data/` | pipeline 產物 |
-| `reports/` | 各階段的單次報告 |
-| `ARCHITECTURE.md` | 架構地圖 |
-| `docs/01`～`06_*.md` | 各模塊的契約、方法、決策理由、驗證方式、待定事項 |
-| `docs/07_troubleshooting.md` | 疑難排解（只追加） |
-| `pyproject.toml`／`requirements.txt` | 專案 metadata 與依賴 |
-| `.env.example` | 環境變數範本（實際 `.env` 由本地提供，不入版控） |
+| Path | 編號／模塊名稱 | Responsibility |
+| --- | --- | --- |
+| `sources.json` | [1] 來源設定 | 入口設定（版本、模組原名、入口 URL）；可被各階段共用讀取 |
+| `src/fetch_pages.py` | [2] 抓取 | 抓取 raw HTML（只做網路 I/O）；文件 `docs/01_fetch.md`（含 [1]） |
+| `src/extract_pages.py` | [3] 抽取 | 抽取主文與標題結構；文件 `docs/02_extract.md` |
+| `src/clean_pages.py` | [4] 清理 | 清理與標題層級正規化；文件 `docs/03_clean.md` |
+| `src/chunk_pages.py` | [5] 切分 | 子母分層切分（目標狀態）；文件 `docs/04_chunk.md` |
+| `src/embed_chunks.py` | [6] 向量化 | Embedding（目標狀態）；文件 `docs/05_embed.md` |
+| `src/index_chunks.py` | [7] 入庫 | 寫入 pgvector（擱置）；文件 `docs/06_index.md` |
+| `data/` | — | pipeline 產物 |
+| `reports/` | — | 各階段的單次報告 |
+| `ARCHITECTURE.md` | — | 架構地圖 |
+| `docs/01`～`06_*.md` | — | 各模塊的契約、方法、決策理由、驗證方式、待定事項 |
+| `docs/07_troubleshooting.md` | — | 疑難排解（只追加） |
+| `requirements.txt` | — | 依賴的唯一來源（鎖定精確版本） |
+| `.env.example` | — | 環境變數範本（實際 `.env` 由本地提供，不入版控） |
 
 pipeline 模組一律放在 `src/`，以 `PROJECT_ROOT = Path(__file__).resolve().parent.parent` 定位專案根；不得在根目錄新增腳本。表列「目標狀態」或「擱置」的模組，實作狀態以實際程式碼為準。檢索（`query.py`）與 UI（`app.py`）不在本契約範圍。
 
@@ -149,7 +150,7 @@ Pipeline invariants（跨階段不可破壞）：
 | [6] Embedding | `BAAI/bge-m3`，sentence-transformers 本機執行，dense、1024 維、正規化、revision 鎖定；sparse／ColBERT 不採用 |
 | [7] 向量庫 | PostgreSQL + pgvector |
 | LLM | OpenAI（回答生成） |
-| 查詢語言 | 英文檢索 + 繁中回答 |
+| 查詢語言 | 英文檢索 + 繁中回答（BGE-M3 支援多語言，待重新評估） |
 | UI | Streamlit（最後階段） |
 | 金鑰 | 只由 `.env` 提供（範本見 `.env.example`） |
 
@@ -172,7 +173,7 @@ Pipeline invariants（跨階段不可破壞）：
 - push、merge、history rewrite、branch deletion
 - remote repository creation（一律 private，只有使用者明確要求才可 public）
 - 修改知識來源（`sources.json`）
-- 寫入專案根目錄之外的路徑（含全域 `~/.codex/skills/`）
+- 寫入專案根目錄之外的路徑（含全域 `~/.codex/skills/`）。例外：Agent 工具本身的暫存與記憶目錄、套件與模型的快取目錄（例如 `~/.cache/huggingface`）；下載仍依 §10 先詢問。
 - 刪除既有資料產物或既有檔案。例外：[4] 依 `docs/03_clean.md` 重建 `cleaned/<version>/`（範圍限定該版本子樹、有路徑斷言、處理完成後才清空）。其他階段如需比照，須另行授權。
 
 例外：檢查 `.gitignore` 內容，以及用 `git status`／`git ls-files` 確認敏感檔案的版控狀態，不屬於禁止項。
@@ -183,16 +184,17 @@ Pipeline invariants（跨階段不可破壞）：
 
 - 專案內讀取、搜尋、`cd`。
 - 修改當前任務範圍內的程式碼與文件（最小必要範圍，遵循 §12）。
-- 重跑 [2]–[6] 階段產生資料產物。
+- 重跑 [2]–[5] 階段產生資料產物（[2] 會連網抓取官方指南頁面）。
+- 重跑 [6]，但僅限模型已在本機快取時；首次需下載模型時依下方「下載模型」先詢問。
 
 ### Must ask first
 
 - 修改架構、管線契約、目錄結構，或 §8 任何技術決策。
-- 新增或升級 dependency（含 `requirements.txt`／`pyproject.toml`）。
+- 新增或升級 dependency（`requirements.txt`）。
 - 下載模型或其他大型檔案（說明來源與大小）。
 - 修改資料來源（`sources.json`）。
 - 刪除或搬移既有檔案。
-- 修改 [4] 噪音規則或標題正規化規則（規則、白名單、門檻；見 `docs/03_clean.md`）。
+- 修改 [4] 清理規則（見 `docs/03_clean.md`）：門檻、白名單的小幅調整須使用者同意並記錄裁定；新增或刪除規則、改變處理順序屬 §16 框架級決策。
 - 定義模塊文件標示為「待定」或「擱置」的項目（如 [5] overlap 與 ID、[7] schema）。
 - §9 全部 Sensitive Operations。
 - 讀取環境變數、系統診斷、硬體狀態等敏感系統資訊。
@@ -292,7 +294,7 @@ Agent 不得宣稱未執行的驗證為成功。
 - 修改資料來源策略
 - 引入新的 agent framework
 - 大型目錄重構
-- 修改 [4] 噪音規則或標題正規化規則（須經人工裁定，並更新 `docs/03_clean.md` 的規則與裁定紀錄）
+- 新增或刪除 [4] 清理規則、改變處理順序（須經人工裁定，並更新 `docs/03_clean.md` 的規則與裁定紀錄）
 - 定義 [7] schema（`docs/06_index.md` 明示擱置）
 
 應採用 **Grill-me mode**：

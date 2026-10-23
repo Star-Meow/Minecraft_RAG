@@ -13,6 +13,7 @@
 | Windows 主控台輸出中文變成亂碼 | [T5](#t5-windows-主控台中文亂碼) |
 | `git add` 出現 `LF will be replaced by CRLF` 警告 | [T6](#t6-git-的-crlf-警告) |
 | `src/fetch_pages.py` 有失敗頁卻回傳 0 | [T7](#t7-抓取失敗時的結束碼與契約不符) |
+| 重新抓取後頁數、跳過頁數、清理結果大幅改變，或出現 `other/.html.md` | [T8](#t8-站台建置方式改變內容未更新) |
 
 ## T1 側邊欄爬取只抓到 39/124 頁
 
@@ -61,3 +62,23 @@
 - **日期**：2026-10-22
 - **現象**：契約寫「有失敗記錄時 exit 1」，但 `src/fetch_pages.py` 有失敗頁時仍回傳 0。
 - **狀態**：待決定要改程式還是改契約（見 [01_fetch.md](01_fetch.md) 的待定事項）。
+- **更新（2026-10-23）**：已改程式，有失敗頁時回傳 1，與契約一致。
+
+## T8 站台建置方式改變（內容未更新）
+
+- **日期**：2026-10-23
+- **現象**：重新執行抓取後，下游結果大幅改變：
+  - sitemap 全站 URL 1,427 → 1,547；1.21.1 為 125 個（含入口頁）。
+  - 抽取：輸出／跳過 121／3 → 124／1；清理：輸出／跳過 119／2 → 123／1。
+  - 出現 `other/.html.md`（入口頁被當成內容頁，`page_slug` 為空）。
+  - `example-setups-index`、`items-blocks-machines-index` 進入知識庫；跳轉頁 `quantum-bridge` 未被排除。
+  - 87 頁的抽取正文改變：23 頁換行消失、整段黏成一行；36 頁多出黏在一起的物品名稱；28 頁的配方標籤行消失。R4a 從 44 頁 174 行降為 23 頁 67 行；未對應標題 58 → 87。
+  - 所有 `source_url` 結尾多了 `/`。
+- **根因**：站台的建置方式改變，**指南內容沒有更新**。
+  - 網址改為結尾帶 `/`（`.../ae2-mechanics/energy/`）；舊網址回應 301 轉址到新網址；入口頁由 `/1.21.1/index` 變為 `/1.21.1/`。
+  - HTML 由 Next.js 輸出改為靜態 HTML，標記結構不同，trafilatura 的抽取結果跟著改變。
+  - 程式未處理結尾 `/`：入口頁排除條件（`/1.21.1/index`）、路徑三元素解析、規則一（`-index` 結尾）都比對失敗。
+- **證據**：
+  - 124 頁的 `<article>` 文字比對：120 頁完全相同；其餘 4 頁只差站台產生的字串（`Unknown recipe type minecraft:blasting` → `Smelting`、`Unknown config value…` → `Error: no configuration values were exported` 等），以及 `items-blocks-machines-index` 改為伺服器端輸出物品清單。
+  - 使用者人工檢視確認網站內容未更新。
+- **處置**：目前資料保留新抓取的版本（未還原）。程式的錯誤處理與清理規則是否重新校準，待決定（見 [01_fetch.md](01_fetch.md)、[02_extract.md](02_extract.md)、[03_clean.md](03_clean.md)）。

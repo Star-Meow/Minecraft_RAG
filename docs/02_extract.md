@@ -58,7 +58,7 @@
 
    | 規則 | 條件 | `reason` |
    | --- | --- | --- |
-   | 規則一（URL） | URL path 以 `-index` 結尾 | `url_ends_with_index` |
+   | 規則一（URL） | URL path 去掉結尾 `/` 後以 `-index` 結尾 | `url_ends_with_index` |
    | 規則二（內容） | 抽出文字 < 200 字元 **且** `<article>` 內連結密度 > 0.5 | `short_text_high_link_density` |
 
    連結密度 = `<article>` 內 `<a>` 文字長度 ÷ `<article>` 可見文字長度；沒有 `<article>` 時視為不命中。

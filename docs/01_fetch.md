@@ -63,7 +63,7 @@
 1. 由 `entry_url` 推導站台根，讀 `robots.txt` 的 `Sitemap:` 宣告；沒有宣告時依序試 `/sitemap.xml`、`/sitemap_index.xml`、`/sitemap-index.xml`。
 2. 有效條件：HTTP 200 **且**根節點為 `<urlset>` 或 `<sitemapindex>`；全部失敗 → fail-fast「此站台無可用 sitemap」（exit 1），**不回退任何導覽爬取**。
 3. `xml.etree.ElementTree`（標準庫）解析；`<sitemapindex>` 遞迴抓子 sitemap 後合併 `<loc>`。
-4. 版本過濾：`urlparse(url).path.startswith(f"/{version}/")`。**必須帶尾斜槓**，不可用 `"1.21.1" in url`，以免 `1.21.10` 誤判。排除入口頁 `/{version}/index`。
+4. 版本過濾：`urlparse(url).path.startswith(f"/{version}/")`。**必須帶尾斜槓**，不可用 `"1.21.1" in url`，以免 `1.21.10` 誤判。排除入口頁：路徑去掉結尾 `/` 後等於 `/{version}` 或 `/{version}/index`（站台網址可能帶結尾 `/`，見 [T8](07_troubleshooting.md#t8-站台建置方式改變內容未更新)）。抓取時使用 sitemap 給的原始網址，不改寫。
 5. 逐頁抓取，每頁間隔 0.5 秒。
 6. 解析路徑三元素（本階段是唯一的計算來源，下游一律從路徑讀）：
 
@@ -73,10 +73,12 @@
    | `chapter` | URL 去掉版本前綴後的倒數第二段；URL 本身已是 slug，不再 slug 化 | `.../1.21.1/ae2-mechanics/energy` → `ae2-mechanics` |
    | `page_slug` | URL 最後一段 | `energy` |
 
-   只有一段的路徑（如 `/1.21.1/getting-started`）一律歸 `chapter = other`，確保每頁都恰好有一層 chapter。
+   只有一段的路徑（如 `/1.21.1/getting-started/`）一律歸 `chapter = other`，確保每頁都恰好有一層 chapter。路徑中的空段（結尾 `/`）不計。
+
+   防護：解析出的 `page_slug` 為空時，該頁記為失敗（`local_path: null`、`error` 說明原因），不寫檔，結束碼為 1。
 7. 寫出 `_manifest.json`。
 
-**失敗處理**：不重試；記錄 `http_status` 與 `local_path: null`，人工查驗後重跑。
+**失敗處理**：不重試；記錄 `http_status` 與 `local_path: null`，仍寫出 manifest，結束碼為 1；人工查驗後重跑。
 
 ## 3. 為什麼這樣做
 
@@ -120,11 +122,10 @@ sitemap 驗證（2026-09-27）：`robots.txt` 宣告 `https://guide.appliedenerg
 執行 `python src/fetch_pages.py`：
 
 - `_manifest.json` 存在，每頁都記錄 `http_status`。
-- 結束碼 0；有失敗記錄時應為 1（見待定事項），須如實回報。
+- 結束碼 0；有失敗記錄時為 1，須如實回報。
 
 ## 6. 待定事項
 
 | 事項 | 狀態 |
 | --- | --- |
-| 有頁面抓取失敗時的結束碼 | 契約寫 exit 1，但目前程式回傳 0；待決定要改程式還是改契約 |
 | `exclude`／`include` 是否啟用 | 保留欄位；需要時再定義 |

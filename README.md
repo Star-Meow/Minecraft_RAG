@@ -53,8 +53,16 @@ flowchart TD
 python -m venv .venv
 ```
 
+Windows：
+
 ```bash
 .venv\Scripts\activate
+```
+
+macOS／Linux：
+
+```bash
+source .venv/bin/activate
 ```
 
 **有 NVIDIA GPU 時**：Windows 上 PyPI 的 `torch` 是 CPU-only build，須先從 PyTorch 的 cu130 index 安裝 GPU 版，再裝其餘依賴（torch 是 sentence-transformers 的傳遞依賴，不寫進 `requirements.txt`）：
