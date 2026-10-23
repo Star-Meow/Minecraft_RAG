@@ -1,87 +1,208 @@
-# Minecraft_RAG 架構文件——資料準備 Pipeline 目標狀態
+# Minecraft_RAG 架構文件
 
-> 本文件描述資料準備管線 **[1]–[7]** 的目標架構。
-> **[1]–[6]** 為現階段目標；**[7] 入庫擱置**，schema 待 [1]–[6] 跑通後定義。
-> **[4] 噪音規則不預先定義**，待第一波資料處理後從樣本歸納。
+> 本文件是資料準備管線 **[1]–[7]** 的**目標架構與契約**，也是各階段 I/O、欄位與規則的單一事實來源。
+> - 實作進度：見 `README.md`「開發狀態」（本文件不記錄進度）
+> - 決策理由與實測依據：見 `docs/adr/`（本文件不記錄實測數字）
+> - Agent 行為規則：見 `AGENTS.md`
 
 ## 1. 專案定位
 
-- **目標**：從 AE2 官方指南（Minecraft 1.21.1）抓取知識，建立可檢索的 RAG 系統。
-- **性質**：輕量級 Wiki RAG side project；**一半目標是學習成熟 RAG 技術棧**。
-- **技術選型**：pgvector（**已確認合理**，schema 待資料準備後定義）。
-- **現階段範圍**：資料準備 pipeline [1]–[6]；[7] 入庫擱置。
+- **目標**：從 AE2 官方指南（Minecraft 1.21.1）建立可檢索、可附來源的 RAG 知識庫。
+- **性質**：輕量級 Wiki RAG side project；一半目標是學習成熟的 RAG 技術棧。
+- **本文件範圍**：資料準備管線 [1]–[7]。[7] 的 schema 擱置；檢索（Retrieval）與 UI 不在本文件範圍。
 
-## 2. Pipeline 總覽
+## 2. Pipeline 總覽（各模塊架構圖）
+
+> 本圖由 §5 衍生，用來快速掌握各模塊的「輸入 > 處理 > 輸出」；欄位與規則的正式定義以 §5 為準。
+> - 範例取自 `items-blocks-machines/terminals` 頁，**僅為示意**，不保證與最新資料逐字相同。
+> - [5]–[7] 只畫已定的框架；「待定」「擱置」項目不畫細節。
+> - §5 或任何 ADR 變更時，本圖須在同一次變更中更新。
 
 ```text
-[1] 入口 URL / sources.json
-      ↓
-[2] 抓取 raw HTML（fetch_pages.py）
-      ↓
-[3] 抽取主文（extract_pages.py + trafilatura）
-      ↓
-[4] 清理與結構化（噪音規則待第一波資料後確認）
-      ↓
-[5] 切分（chunk_pages.py + 真 tokenizer）
-      ↓
-[6] Embedding（embed_chunks.py + MiniLM）
-      ↓
-[7] 寫入 pgvector（schema 待 [1]–[6] 跑通後定義）
+══════════════════════════════════════════════════════════════════════════════
+ 共用設定：sources.json（各階段都可以讀；§3 原則 1）
+══════════════════════════════════════════════════════════════════════════════
+
+┌─[1] SOURCE ─────────────────────────────────────────────────── sources.json ─┐
+│ 輸入  人工維護                                                                │
+│ 處理  無（不需要程式）                                                        │
+│ 輸出  { "version": "1.21.1",                                                 │
+│         "mod": "Applied Energistics 2",          ← 原名，不 slug 化           │
+│         "entry_url": "https://guide.appliedenergistics.org/1.21.1/index",    │
+│         "exclude": [], "include": [] }           ← 保留欄位，[2] 目前不讀     │
+│ 規則  entry_url 只用來推導站台根，不抓取；版本只取自 version                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─[2] CRAWL ────────────────────────────────────────── src/fetch_pages.py ─────┐
+│ 輸入  sources.json + robots.txt → sitemap.xml（URL 真值來源，ADR-001）         │
+│ 處理  ① 找 sitemap（robots 宣告 → 慣例路徑；找不到 → fail-fast）              │
+│       ② ElementTree 解析 <loc>                                               │
+│       ③ 版本過濾 path.startswith("/1.21.1/")，排除入口頁                      │
+│       ④ 逐頁抓取，間隔 0.5 秒                                                │
+│       ⑤ 由 URL 解析路徑三元素（只在這裡計算一次）                             │
+│          mod_slug  = slugify(mod)          → applied-energistics-2           │
+│          chapter   = 去掉版本後的倒數第二段 → items-blocks-machines           │
+│          page_slug = 最後一段               → terminals                       │
+│          （只有一段的路徑 → chapter = other）                                 │
+│ 輸出  data/raw/1.21.1/applied-energistics-2/items-blocks-machines/           │
+│         terminals.html                                                       │
+│       data/raw/_manifest.json 的一筆：                                       │
+│         { "url": ".../1.21.1/items-blocks-machines/terminals",               │
+│           "chapter": "items-blocks-machines", "page_slug": "terminals",      │
+│           "local_path": "data/raw/1.21.1/.../terminals.html",                │
+│           "http_status": 200 }                                               │
+│ 失敗  不重試；記錄 http_status 與 local_path: null                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─[3] EXTRACT ───────────────────────────────────── src/extract_pages.py ──────┐
+│ 輸入  raw HTML + _manifest.json                                              │
+│ 處理  ① trafilatura（json 模式）抽出 title／text／source／hostname（原值不改） │
+│       ② navigation_only 判定 → 命中就跳過、不輸出                             │
+│          規則一：URL 以 -index 結尾            reason = url_ends_with_index   │
+│          規則二：文字 < 200 且 <article> 連結密度 > 0.5                       │
+│                                    reason = short_text_high_link_density    │
+│       ③ 標題結構（ADR-004）：讀 <article> 的 h1–h3                           │
+│          → 依序在 text 中找完全相同的行 → 加上 '#' × 原層級                   │
+│          （不調整層級、不判斷雜訊）                                           │
+│ 輸出  extracted/1.21.1/applied-energistics-2/items-blocks-machines/          │
+│         terminals.json                                                       │
+│         { "title": "Terminals",                                              │
+│           "text": "Terminals\nWhile ME Pattern Providers, ...\n              │
+│                    Terminal Placement\n...\nCrafting Terminal\n              │
+│                    The UI\nRecipe\n...",                  ← 原值             │
+│           "markdown": "# Terminals\nWhile ME Pattern Providers, ...\n        │
+│                    ## Terminal Placement\n...\n# Crafting Terminal\n         │
+│                    ## The UI\n## Recipe\n...",            ← 只多了 # 記號    │
+│           "source": "https://.../items-blocks-machines/terminals",           │
+│           "hostname": "appliedenergistics.org", "http_status": 200 }         │
+│       + _parse_report.json、reports/extraction_report.md                     │
+│       + extracted_readable/**/*.md（給人看，不入版控）                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─[4] CLEAN ───────────────────────────────────────── src/clean_pages.py ──────┐
+│ 輸入  extracted JSON（只讀 title／source／markdown）+ sources.json            │
+│ 處理  所有規則都用「去掉 # 後的內容」比對（ADR-002、ADR-004）                  │
+│       0 前置條件  title 或 source 為空 → 不輸出                               │
+│       1 R2        跳轉頁（首行是站名且字數 < 門檻）→ 不輸出                   │
+│       2 R1        刪除重複的頁面標題（# Terminals）                           │
+│       3 R4a       刪除整行配方標籤（含 ## Recipe）                            │
+│       4 R4b       切除單行頁尾端黏住的標籤                                    │
+│       5 R6        依相對深度調整層級：                                        │
+│                   直屬頁面的標題 → ##；頁內 H1 → ##、它底下的 H2 → ###          │
+│       6 守衛      body 為空 → 不輸出；不足 200 字元 → 輸出但在報告標示         │
+│ 輸出  cleaned/1.21.1/applied-energistics-2/items-blocks-machines/            │
+│         terminals.md                                                         │
+│         ---                                                                  │
+│         title: Terminals                                                     │
+│         source_url: "https://.../items-blocks-machines/terminals"            │
+│         ---                                                                  │
+│                                                                              │
+│         # Terminals                       ← 每頁只有一個 #                   │
+│                                                                              │
+│         While ME Pattern Providers, ...                                      │
+│         ## Terminal Placement                                                │
+│         ...                                                                  │
+│         ## Crafting Terminal                                                 │
+│         ### The UI                                                           │
+│         ...                               ← ## Recipe 已被刪除               │
+│       + reports/cleaning_report.md（對帳：輸出 + 跳過 + 例外 = 輸入）         │
+│ 擁有  cleaned/<version>/ 由 [4] 負責：全部處理完才清空並重建                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─[5] CHUNK ────────────────────────────────────── src/chunk_pages.py ─────────┐
+│ 輸入  只讀 cleaned MD                                                         │
+│         路徑      → version／mod／chapter／page                               │
+│         frontmatter → title／source_url（不改寫；source_url 為空 → 不產出）   │
+│ 處理  子母分層（ADR-005）                                                     │
+│         MarkdownHeaderTextSplitter → 依 ## 切成 parent（### 併入所屬的 ##）   │
+│                                      沒有 ## 的頁 → 整頁一個 parent           │
+│         RecursiveCharacterTextSplitter → 在 parent 內切出 child              │
+│         BGE-M3 tokenizer 計數，並檢查不超過上限                               │
+│ 輸出  parent 文件與 child chunks，兩者都帶完整 provenance：                   │
+│         source_url、title、mod、chapter、page、版本、                         │
+│         section = 標題路徑，例如 "Crafting Terminal > The UI"                 │
+│       child 必須能對應回所屬的 parent                                         │
+│ 待定  大小區間與 overlap（先量 token 分布）、ID 格式、parent 的檔名與 schema   │
+└──────────────────────────────────────────────────────────────────────────────┘
+                     │ child                           │ parent
+                     ▼                                 │
+┌─[6] EMBED ───────────────────────── src/embed_chunks.py ─┐  │
+│ 輸入  child chunks                                        │  │
+│ 處理  BAAI/bge-m3（sentence-transformers，本機執行）        │  │
+│       dense、1024 維、正規化、鎖定 revision（ADR-003）     │  │
+│       只對 child 做 embedding                             │  │
+│ 輸出  每筆 child + 1024 維向量 + parent 參照                │  │
+│       + model_name／model_revision                        │  │
+│       與輸入逐筆對應（順序、ID、metadata 都不變）           │  │
+│ 待定  embedding 輸入的拼接格式                             │  │
+└──────────────────────────────────────────────────────────┘  │
+                     │                                         │
+                     ▼                                         ▼
+┌─[7] INDEX ─────────────────────────────────────── src/index_chunks.py ───────┐
+│ 輸入  [6] 的 child 向量 + [5] 的 parent 文件（docstore 模式）                 │
+│ 處理  寫入 PostgreSQL + pgvector                                             │
+│         child 向量 → 向量庫（1024 維）                                       │
+│         parent    → 能用 parent 參照取回                                     │
+│ 擱置  schema、入庫方式、索引類型                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ 以下不在 [1]–[7] 範圍內 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+  Retrieval  英文問題 → 檢索 child → 依 parent 去重 → 取回 parent
+             → OpenAI 用繁中回答 + 附 source_url；找不到依據 → 「目前官方文件不足以確認」
+  UI         Streamlit
 ```
 
-## 3. 目錄結構
+**閱讀重點**：
+
+- **職責分工**：結構由 [3] 辨識（只有它看得到 HTML），[4] 只負責去噪與層級調整，[5] 只依 `##` 切分。
+- **兩條資料流**：[5] 之後分成 child（經 [6] 轉成向量）與 parent（直接給 [7]），也就是 docstore 模式。
+- **共用設定**：`sources.json` 讓多個階段一起讀，屬於正常的設定共用，不算耦合。
+
+## 3. 模塊邊界原則
+
+以業界常見做法（DVC、Kedro 的 parameters／資料目錄；LangChain／LlamaIndex 的 parent-child docstore）為基準，不過度解耦：
+
+1. **設定可以共用**：`sources.json`、模型名稱與 revision、切分參數等設定，任何階段都可以讀。
+2. **資料產物依契約讀取**：一個階段讀它所依賴的產物，通常是直接上游；天生需要多份產物的階段（如 [7] 同時讀向量與 parent）可以直接讀多個上游，不需要轉交。
+3. **只依賴契約，不依賴實作**：下游只認上游的契約欄位，不需要知道上游工具的行為。
+4. **單一職責**：辨識結構 = [3]（唯一看得到 HTML 的階段）；去噪與正規化 = [4]；切分 = [5]。
+5. **能單獨重跑、單獨驗證**：每個階段在 `AGENTS.md` §13 有自己的驗收標準；正式產物整份覆寫（冪等）。
+
+## 4. 目錄結構
 
 ```text
 Minecraft_RAG/
-├── sources.json                      ← [1] 輸入：入口 URL + 版本 + 模組
+├── sources.json                  ← [1] 設定：版本 + 模組 + 入口 URL
+├── src/                          ← pipeline 模組（每階段一支，見 §5）
 ├── data/
-│   ├── raw/                          ← [2] 抓取
-│   │   ├── _manifest.json            ← 單次抓取記錄（覆蓋）
-│   │   ├── _fetch_log.txt            ← 逐頁成敗 debug log（覆蓋，不入版控）
-│   │   └── 1.21.1/
-│   │       └── applied-energistics-2/
-│   │           └── <chapter>/
-│   │               └── *.html
+│   ├── raw/                      ← [2] raw HTML + _manifest.json + _fetch_log.txt
 │   ├── processed/
-│   │   ├── extracted/                ← [3] 抽取（真值）
-│   │   │   └── 1.21.1/
-│   │   │       └── applied-energistics-2/
-│   │   │           └── <chapter>/
-│   │   │               └── *.json
-│   │   ├── extracted_readable/       ← [3] 人類可讀衍生物（不入版控）
-│   │   │   └── _index.md             ←   全頁索引（驗收用）
-│   │   ├── cleaned/                  ← [4] 清理
-│   │   │   └── 1.21.1/
-│   │   │       └── applied-energistics-2/
-│   │   │           └── <chapter>/
-│   │   │               └── *.md
-│   │   ├── chunks/                   ← [5] 切分
-│   │   │   └── chunks.jsonl
-│   │   └── embeddings/               ← [6] Embedding
-│   │       └── embeddings.jsonl
-│   └── evaluation/                   ← 評估（未來範圍，不屬 [1]–[7]）
-├── reports/                          ← 驗證報告
-│   ├── extraction_report.md          ← [3] 單次報告（覆蓋）
-│   └── cleaning_report.md            ← [4] 單次報告（覆蓋）
+│   │   ├── extracted/            ← [3] 真值（JSON）+ _parse_report.json
+│   │   ├── extracted_readable/   ← [3] 人類可讀衍生物（不入版控）
+│   │   ├── cleaned/              ← [4]（cleaned/<version>/ 由 [4] 擁有，每次重建）
+│   │   ├── chunks/               ← [5]
+│   │   └── embeddings/           ← [6]
+│   └── evaluation/               ← 評估（未來範圍，不屬 [1]–[7]）
+├── reports/                      ← 各階段的單次報告（覆蓋）
 ├── docs/
-│   └── adr/                          ← Architecture Decision Records
-│       └── ADR-001-sitemap-as-url-source.md  ← [2] URL 真值來源決策
-└── src/
-    ├── fetch_pages.py                ← [2] 抓取
-    ├── extract_pages.py              ← [3] 抽取
-    ├── clean_pages.py                ← [4] 清理
-    ├── chunk_pages.py                ← [5] 切分
-    ├── embed_chunks.py               ← [6] Embedding
-    └── index_chunks.py               ← [7] 入庫（擱置）
+│   ├── adr/                      ← Architecture Decision Records
+│   └── plans/                    ← 過程文件（調查證據、計畫；非規範）
+├── ARCHITECTURE.md               ← 本文件
+├── AGENTS.md                     ← AI Agent 工程契約
+└── README.md                     ← 人類使用說明與開發狀態
 ```
 
-**路徑慣例**：所有資料產物按 `<version>/<mod_slug>/<chapter>/` 分層，版本、模組與章節一路傳遞至最終 chunk。chapter 層由 [2] 從 URL 解析後寫入路徑，下游全部從路徑讀（見 §4 [2]）。
+**路徑慣例**：資料產物一律依 `<version>/<mod_slug>/<chapter>/<page_slug>` 分層。路徑三元素只由 [2] 計算一次，下游一律從路徑讀取。檔名以 `_` 開頭的是控制檔（manifest、報告），不是資料頁。
 
-## 4. 各階段架構
+## 5. 各階段契約
 
-### [1] 入口與抓取範圍
+### [1] SOURCE — 入口設定
 
-`sources.json` 內容：
+`sources.json`（人工維護）：
 
 ```json
 {
@@ -93,39 +214,37 @@ Minecraft_RAG/
 }
 ```
 
-- `mod` 存**模組原名**（`Applied Energistics 2`），**不 slug 化**；[2] 才用 `python-slugify` 轉成 `mod_slug` 寫入路徑。
-- **入口僅用於推導站台根**（`urlparse` 取 scheme + host），**不作為抓取目標**；`version` 直接取自 `sources.json` 的 `version` 欄位，**不由入口頁推導**。
-- **整條 URL 鏈的起點**：`sources.json` 的 `version` 給定版本前綴、`entry_url` 推導站台根；逐頁 URL 由 [2] 解析 **sitemap.xml** 產生（見 `docs/adr/ADR-001`），再經 [3] trafilatura 抽取為 `source`，一路傳至 chunk 的 `source_url`（見 §4 [5]）。
-- **抓取範圍**：sitemap.xml 中版本前綴 `/{version}/` 下的所有頁，排除入口頁本身。
-- **方式**：`robots.txt` 的 `Sitemap:` 宣告（找不到才試慣例路徑）+ `xml.etree.ElementTree` 解析。
-- **廢棄舊的 sources.json**（6 頁人工清單）。
+| 欄位 | 語意 |
+| --- | --- |
+| `version` | Minecraft 版本；決定目錄分層，並一路傳到 chunk |
+| `mod` | 模組**原名**，不 slug 化；由 [2] 轉成 `mod_slug` |
+| `entry_url` | 只用來推導站台根（scheme + host），**不作為抓取目標**；版本取自 `version`，不由入口頁推導 |
+| `exclude`／`include` | 保留於 schema；[2] 目前不讀取（範圍由版本過濾決定） |
 
-### [2] 抓取 raw HTML
+`sources.json` 是整條 URL 鏈的起點：`version` + 站台根 → [2] 解析 sitemap.xml 產生逐頁 URL → [3] 抽出 `source` → chunk 的 `source_url`。
 
-- **輸入**：`sources.json`（`version` 欄位 + `entry_url` 推導的站台根）；逐頁 URL 來自 **sitemap.xml**
-- **職責**：只負責網路 I/O，**不做 HTML→Markdown 轉換**、**不解析導覽 DOM**；同時解析路徑三元素（`mod_slug`／`chapter`／`page_slug`）並寫入目錄
-- **URL 真值來源**：**sitemap.xml**（決策見 `docs/adr/ADR-001-sitemap-as-url-source.md`）。站台為 Next.js SPA，入口頁側邊欄為情境式展開且 `items-blocks-machines` 索引頁為 client-side rendering，伺服器 HTML 不含完整頁面清單；**不做側邊欄爬取，亦不保留任何相關 fallback**。
+### [2] CRAWL — 抓取 raw HTML（`src/fetch_pages.py`）
+
+- **輸入**：`sources.json`；逐頁 URL 的真值來源為 **sitemap.xml**（ADR-001）。
+- **職責**：只做網路 I/O；不做 HTML→Markdown、不解析導覽 DOM、不爬側邊欄、不保留任何 fallback。
 - **步驟**：
-  1. 由 `entry_url` 推導站台根，抓 `robots.txt` 找 `Sitemap:` 宣告；無宣告則依序試 `/sitemap.xml`、`/sitemap_index.xml`、`/sitemap-index.xml`
-  2. 判定標準：HTTP 200 且 body 根節點為 `<urlset>` 或 `<sitemapindex>`；皆失敗 → **fail-fast「此站台無可用 sitemap」**，不 fallback
-  3. 以 `xml.etree.ElementTree`（標準庫）解析；`<sitemapindex>` 則遞迴抓每個子 sitemap 後合併 `<loc>`
-  4. 版本過濾：`urlparse(url).path.startswith(f"/{version}/")`（**必須帶尾部斜槓**，不可 `"1.21.1" in url`，避免 `1.21.10` 誤判）；排除入口頁 `path == f"/{version}/index"`
-  5. 逐頁抓取 raw HTML，每頁間隔 0.5 秒
-  6. 對每個 URL 解析路徑三元素，存入 `data/raw/<version>/<mod_slug>/<chapter>/<page_slug>.html`
-  7. 輸出 `data/raw/_manifest.json`（單次記錄，覆蓋）
-
-- **路徑三元素解析規則**（[2] 唯一計算來源，下游一律從路徑讀）：
+  1. 由 `entry_url` 推導站台根，讀 `robots.txt` 的 `Sitemap:` 宣告；沒有宣告時依序試 `/sitemap.xml`、`/sitemap_index.xml`、`/sitemap-index.xml`。
+  2. 有效條件：HTTP 200 且根節點為 `<urlset>` 或 `<sitemapindex>`；全部失敗 → fail-fast（exit 1）。
+  3. `xml.etree.ElementTree` 解析；`<sitemapindex>` 遞迴抓子 sitemap 後合併 `<loc>`。
+  4. 版本過濾：`urlparse(url).path.startswith(f"/{version}/")`（必須帶尾斜槓）；排除入口頁 `/{version}/index`。
+  5. 逐頁抓取，每頁間隔 0.5 秒，存入 `data/raw/<version>/<mod_slug>/<chapter>/<page_slug>.html`。
+  6. 輸出 `data/raw/_manifest.json`（整份覆寫）。
+- **路徑三元素**（[2] 是唯一的計算來源）：
 
   | 元素 | 來源 | 範例 |
   | --- | --- | --- |
-  | `mod_slug` | `sources.json` 的 `mod` 經 `python-slugify` 轉換 | `Applied Energistics 2` → `applied-energistics-2` |
-  | `chapter` | URL **去掉版本前綴後的倒數第二段**；URL 本身已是 slug，**不另行 slug 化** | `.../1.21.1/ae2-mechanics/energy` → `ae2-mechanics` |
-  | `page_slug` | URL 最後一段 | `.../ae2-mechanics/energy` → `energy` |
+  | `mod_slug` | `mod` 經 `python-slugify` | `Applied Energistics 2` → `applied-energistics-2` |
+  | `chapter` | URL 去掉版本前綴後的倒數第二段；URL 本身已是 slug，不再 slug 化 | `.../1.21.1/ae2-mechanics/energy` → `ae2-mechanics` |
+  | `page_slug` | URL 最後一段 | `energy` |
 
-  - **根目錄頁歸類**：`/1.21.1/getting-started`、`/1.21.1/tips-and-tricks` 這類只有一段的路徑，倒數第二段會抓到版本號；此類頁 chapter 統一為 `other`（如 `applied-energistics-2/other/getting-started.html`），作為「沒有 chapter」的預設歸類，確保每頁都恰好有一層 chapter、下游路徑解析一致。
-  - slug 只用於**路徑與命名**（資料夾名、檔名、`chunk_id`）；**內容欄位（`text`、`section`）禁止 slug 化**。
+  只有一段的路徑（如 `/1.21.1/getting-started`）一律歸 `chapter = other`。
 
-- **`_manifest.json` 結構**：
+- **`_manifest.json`**：
 
   ```json
   {
@@ -133,7 +252,7 @@ Minecraft_RAG/
     "mod": "Applied Energistics 2",
     "mod_slug": "applied-energistics-2",
     "source": "sitemap",
-    "fetched_at": "2026-09-25T14:00:00",
+    "fetched_at": "<ISO 8601>",
     "urls": [
       {
         "url": "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/energy",
@@ -141,266 +260,178 @@ Minecraft_RAG/
         "page_slug": "energy",
         "local_path": "data/raw/1.21.1/applied-energistics-2/ae2-mechanics/energy.html",
         "http_status": 200,
-        "fetched_at": "2026-09-25T14:00:00"
+        "fetched_at": "<ISO 8601>"
       }
     ]
   }
   ```
 
-  - `mod` 保留**原名**，`mod_slug` 為 slug 化結果；兩者都記錄，讓 `_manifest.json` 可單獨追溯原名。
-  - `source` 記錄 URL 發現來源（`"sitemap"`），用於追溯 [2] 的真值來源。
-  - `urls[].local_path` 已含 chapter 層；失敗頁 `local_path` 為 `null`。
+  `local_path` 是相對專案根目錄的 POSIX 路徑；失敗頁為 `null`。
+- **失敗處理**：不重試；記錄 `http_status` 與 `local_path: null`，人工查驗後重跑；有失敗記錄時 exit 1。
 
-- **失敗處理**：不重試，記錄 `http_status` 與 `local_path: null`，人工查驗後再次執行
+### [3] EXTRACT — 抽取主文與標題結構（`src/extract_pages.py`）
 
-### [3] 抽取主文
-
-- **輸入**：`data/raw/<version>/<mod_slug>/<chapter>/*.html`
-- **職責**：用 **trafilatura** 從 raw HTML 抽取主文；同時**判定並跳過 navigation_only 頁**（導覽索引頁，無知識內容）
+- **輸入**：`data/raw/**/*.html` + `data/raw/_manifest.json`（取 `http_status`、`local_path`）。
+- **職責**：用 trafilatura 抽主文；辨識頁內標題結構；跳過 navigation_only 頁。
 - **步驟**：
-  1. 遍歷 `data/raw/<version>/<mod_slug>/<chapter>/` 下的所有 HTML
-  2. 從 `_manifest.json` 取得每個 URL 的 `http_status`
-  3. 對每個檔案呼叫：
+  1. `trafilatura.extract(html, output_format="json", with_metadata=True, include_tables=True)`，直接吃 HTML 字串。
+  2. **navigation_only 判定**（命中即跳過，不輸出）。兩條規則為 OR，各有獨立的 `reason` 字串：
 
-     ```python
-     trafilatura.extract(html, output_format="json", with_metadata=True, include_tables=True)
-     ```
-
-  4. **navigation_only 判定**（命中即跳過，不輸出 extracted 檔）。兩條規則為 **OR**，**各自配發獨立 reason 字串**，不可共用同一值——未來若出現「非 `-index` 結尾但仍是導覽頁」的案例，需能由 reason 分辨是哪一條規則命中：
-
-     | 規則 | 判定條件 | `reason` 值 |
+     | 規則 | 條件 | `reason` |
      | --- | --- | --- |
-     | 規則一（URL） | URL path 以 `-index` 結尾（如 `ae2-mechanics/ae2-mechanics-index`） | `url_ends_with_index` |
-     | 規則二（內容） | trafilatura 抽出文字長度 < `NAV_MIN_TEXT_LENGTH`（200 字元）**且** `<article>` 內連結密度 > `NAV_MAX_LINK_DENSITY`（0.5） | `short_text_high_link_density` |
+     | 規則一（URL） | URL path 以 `-index` 結尾 | `url_ends_with_index` |
+     | 規則二（內容） | 抽出文字 < 200 字元 **且** `<article>` 內連結密度 > 0.5 | `short_text_high_link_density` |
 
-     - **連結密度只算 `<article>` 內容區，不算整頁**：本站台每頁都帶情境式展開的側邊欄（最多 91 個連結），若對整頁 HTML 計算，短內容頁（物品／配方頁）會被側邊欄連結拖高密度而遭誤殺。實測對照（整頁 vs `<article>`）：`certus_quartz_dust` 0.86→0.00、`quartz_glass` 0.85→0.00、`crank` 0.86→0.00——這類頁是真內容頁，規則二對它們必須判定為不命中。
-     - **閾值 0.5 的實測依據**（124 頁全量，2026-09-27）：規則一相關的 `-index` 頁 `<article>` 密度為 0.93／0.97；非 `-index` 的 121 頁最高 0.44（`p2p-tunnels` 0.440、`quantum-bridge` 0.431，其餘 ≤ 0.31）。`0.44 < 0.5 < 0.93`，0.5 落在兩群之間的空隙，無重疊。
-     - **規則一不可省**：`items-blocks-machines-index` 為 client-side rendering 頁，其 `<article>` 僅 354 字元占位文字（`Unknown category: ...`）且**零連結**，密度 0.0000——規則二對它判定不命中，只能靠規則一的 URL 後綴命中。
-     - 預期命中：3 個 `*-index` 章節索引頁；實際全數由**規則一**命中（規則二目前命中 0 頁，保留給未來「無 `-index` 後綴」的導覽頁）。
-  5. 其餘頁存入 `data/processed/extracted/<version>/<mod_slug>/<chapter>/<page_slug>.json`
-  6. 輸出 `data/processed/extracted/_parse_report.json`：`{ parsed_count, skipped: [{url, reason}], warnings: [{url, phase, error}], errors: [] }`；`reason` 只填上表兩值之一（`navigation_only` 是**判定類別名**，不是 `reason` 的合法值）；`warnings` 記非致命問題（.md 衍生物寫入失敗等），**不影響 exit code**，其 `url` 為選填（`readable_index` 那筆無 `url`）
-- **輸出 JSON 結構**：
+     連結密度只計算 `<article>`，不計算整頁（側邊欄會拉高短內容頁的密度）。閾值依據見 ADR-001 §6。
+  3. **標題結構（ADR-004）**：讀 `<article>` 的 h1–h3，依文件順序用游標往下找 `text` 中去前後空白後完全相同的行，加上 `'#' × 原層級 + ' '`，產生 `markdown`。找不到的標題不加記號，記入報告。不正規化層級、不判斷噪音。
+  4. 寫出 extracted JSON、人類可讀衍生物與報告。
+- **輸出 JSON**（`data/processed/extracted/<version>/<mod_slug>/<chapter>/<page_slug>.json`）：
 
   ```json
   {
-    "title": "Autocrafting",
-    "text": "...",
-    "source": "https://...",
+    "title": "Energy",
+    "text": "Energy\nYour network will require energy to run. ...\nEnergy Accepting\n...",
+    "source": "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/energy",
     "hostname": "appliedenergistics.org",
+    "markdown": "# Energy\nYour network will require energy to run. ...\n## Energy Accepting\n...",
     "http_status": 200
   }
   ```
 
-  - **不加 `page_slug`／`chapter` 欄位**：這些 metadata 由 [5] 直接從**目錄路徑**讀取，extracted JSON 只保留 trafilatura 原始輸出與 `http_status`。
-  - **`title` 保留不異動**：trafilatura 抽出的 `title` 原封留在 extracted JSON，由 [4] 帶入 cleaned MD 的 H1。
-  - **`hostname` 保留 trafilatura 原值**：實測為 `appliedenergistics.org`（非 `guide.appliedenergistics.org`），依「資料不異動」原則**不修正**。
+  | 欄位 | 規則 |
+  | --- | --- |
+  | `title`／`text`／`source`／`hostname` | trafilatura 原值，**不異動**（`hostname` 不修正） |
+  | `markdown` | 等於 `text` 加上標題記號；去掉記號後逐行等於 `text` |
+  | `http_status` | 由 `_manifest.json` 帶入 |
 
-- **人類可讀衍生物**（驗收用，非真值）：
-  - 每個 `extracted/**/*.json` 另產出對應的 `extracted_readable/**/*.md`，**路徑鏡像、僅副檔名不同**；skipped 頁不產出
-  - `.md` 格式：YAML front matter（`title`／`source`／`hostname`／`http_status`／`text_length`）→ 空行 → `# {title}` → 空行 → `text` **原文（不加工、不清理、不換行處理）**
-  - `extracted_readable/_index.md`：表格列出所有已輸出頁（`title`／`chapter`／`page_slug`／`text_length`／`source`），`chapter`／`page_slug` 取自 `_manifest.json`
-  - **生成順序與失敗處理**：JSON 成功後才寫 .md；.md 寫入失敗只記 warning（log 與 `_parse_report.json` 的 `warnings`），**不影響 exit code**、不重試
-  - **真值以 JSON 為準**；.md 不入版控（見 `.gitignore`），丟失可由 [3] 重產
+  不加 `page_slug`／`chapter`：下游從路徑讀。
+- **其他輸出**：
+  - `extracted/_parse_report.json`：`{ parsed_count, skipped: [{url, reason}], warnings: [{url?, phase, error}], errors: [] }`。`reason` 只能是上表的兩個值。
+  - `reports/extraction_report.md`：計數、跳過頁、空 `source`／`title` 警示、標題對應數與未對應清單。
+  - `extracted_readable/**/*.md` + `_index.md`：人類驗收用，路徑鏡像 JSON；內容為 front matter + `# {title}` + `text` 原文。真值以 JSON 為準；寫入失敗只記 warning，不影響 exit code。
+- **失敗處理**：trafilatura 回傳 None → 記入 errors，其他頁繼續；缺 `http_status` 或 `text` 為空 → 報告標記。
 
-- **狀態判斷**：`http_status` + `text` 是否為空；報告記錄 `source`（與 `title`）是否為空，供人工查驗（不預寫 fallback）
-- **更新行為**：單次記錄，覆蓋
+### [4] CLEAN — 清理與結構正規化（`src/clean_pages.py`）
 
-### [4] 清理與結構化（噪音規則待確認）
+- **輸入**：`data/processed/extracted/<version>/**/*.json`（只讀 `title`／`source`／`markdown`；缺 `markdown` 視為例外）+ `sources.json`（版本與模組）。
+- **職責**：過濾 trafilatura 誤留的噪音、正規化標題層級，輸出含 frontmatter 的乾淨 Markdown。規則只作用於正文；`title`、`source` 原封傳遞。
+- **規則（依序；定義與白名單見 ADR-002，標題相關見 ADR-004）**：所有規則以「去掉標題記號後的行內容」比對，標題行與一般行套用同一套規則。
 
-- **輸入**：`data/processed/extracted/<version>/<mod_slug>/<chapter>/*.json`
-- **職責**：過濾 trafilatura 誤留的噪音，輸出乾淨的 MD
-- **步驟**：
-  1. 遍歷 `extracted/*.json`
-  2. 讀 `title`、`source`、`text` 欄位（`title` → frontmatter 與 H1；`source` → frontmatter 的 `source_url`）
-  3. 用正則或規則過濾噪音（**規則待第一波資料處理後再確認**）
-  4. 存入 `data/processed/cleaned/<version>/<mod_slug>/<chapter>/<page_slug>.md`
-  5. 產生 `reports/cleaning_report.md`
-- **cleaned MD 格式**：**保留 frontmatter 與 H1**，frontmatter 至少含 `title`、`source_url`，其後為 `# <頁面標題>` + 正文：
+  | 順序 | 規則 | 摘要 |
+  | --- | --- | --- |
+  | 0 | 前置條件 | `title` 或 `source` 為空 → 不輸出，記入報告 |
+  | 1 | R2 跳轉頁排除 | 首行 == 站名且全頁字元數 < 門檻 → 不輸出；首行為站名但未排除 → 報告警告 |
+  | 2 | R1 首行標題去重 | A：首行（含 `# <title>`）== title → 刪；B：title 黏在句首 → 切前綴（有守衛）；C：次行 == title → 刪 |
+  | 3 | R4a 整行標籤 | 整行 == 白名單標籤 → 刪（含 `## Recipe` 這類標題行） |
+  | 4 | R4b 黏合尾端標籤 | 只作用於整頁單行的頁；行尾黏合的標籤序列 → 切除 |
+  | 5 | R6 標題層級正規化 | 依相對深度輸出 `##`／`###`／`####`：一般頁 h2 → `##`；多 H1 頁的頁內 H1 → `##`、其下 H2 → `###`；每頁只保留 `# <title>` |
+  | 6 | 空 body 守衛 | 處理後 body 為空 → 不輸出；不足 200 字元 → 輸出並在報告標示 |
+
+  R2 門檻與字元統計以去掉標題記號的純文字計算。
+- **輸出格式**（`data/processed/cleaned/<version>/<mod_slug>/<chapter>/<page_slug>.md`）：
 
   ```markdown
   ---
-  title: Energy
-  source_url: https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/energy
+  title: Terminals
+  source_url: "https://guide.appliedenergistics.org/1.21.1/items-blocks-machines/terminals"
   ---
 
-  # Energy
+  # Terminals
 
-  Your network will require energy to function.
-
-  ## Energy Accepting
-
-  Machines that accept energy will pull it from the network automatically.
+  While ME Pattern Providers, ... There are several variants with differing functions.
+  ## Terminal Placement
+  As a terminal is often the first subpart someone might place, ...
+  ## Crafting Terminal
+  ### The UI
+  ...
   ```
 
-  - `title`／`source_url` 由 [4] 從 extracted JSON 原封寫入（**資料不異動**，不改寫）；frontmatter 可含其他欄位供人類閱讀，但 [5] 只讀 `title`／`source_url`。
-  - **空行要求**：frontmatter 區塊與 `# <title>` 之間以空行分隔；`# <title>` 與正文之間以空行分隔（避免影響 Markdown 解析與 MarkdownHeaderTextSplitter）。
-  - 其餘 metadata（版本／模組／章節／頁面）的**權威來源為目錄路徑**；frontmatter 若含這些欄位，僅供人類閱讀，[5] 不從 frontmatter 讀取。
-- **備註**：噪音規則不預先定義，先跑 [3] 看輸出，再從樣本歸納
+  - frontmatter 至少含 `title`、`source_url`，值由 extracted JSON 原封寫入；frontmatter 與 H1 的 `title` 一致，不一致時以 frontmatter 為準。
+  - frontmatter 與 `# <title>` 之間、`# <title>` 與正文之間各一個空行；正文段落之間沒有空行（trafilatura json 模式不保留段落）。
+  - UTF-8、LF、檔尾單一換行。
+- **目錄擁有權**：`cleaned/<version>/` 由 [4] 擁有。全部頁面在記憶體處理完、且至少一頁有產出後，才清空並重建；路徑斷言限定該版本子樹，不動 `cleaned/.gitkeep`。
+- **報告**：`reports/cleaning_report.md`。內容包含：
+  - 對帳：輸出 + 跳過 + 例外 = 輸入
+  - 各規則命中數、R6 各層級標題數
+  - 跳過頁清單、標籤刪除摘要、孤立 `-` 計數、疑似新標籤、警告附錄
+- **失敗處理**：讀取或處理例外 → 逐頁隔離、記入報告、exit 1；沒有任何頁產出 → 中止、不清空既有輸出、exit 1。
+- **前提**：規則依「無圖片版本」的抽取結果校準；站方改版或 [3] 改抽圖片屬性時須重新盤點（ADR-002）。
 
-### [5] 切分
+### [5] CHUNK — 子母分層切分（`src/chunk_pages.py`）
 
-- **輸入**：`data/processed/cleaned/<version>/<mod_slug>/<chapter>/*.md`
-- **只讀 cleaned MD**：[5] **不讀** `extracted/*.json`、**不讀** `_manifest.json`。**內容性 metadata**（`title`／`source_url`）從 frontmatter 讀；**結構性 metadata** 由以下 snippet 從路徑讀取（只讀檔名與資料夾名，不解析檔案內容）：
+> 框架已定（ADR-005）；參數、ID 與欄位格式待實作時定義，不預先虛構。
 
-  ```python
-  page_slug = md_file.stem                          # "energy"
-  chapter   = md_file.parent.name                   # "ae2-mechanics"
-  mod_slug  = md_file.parent.parent.name            # "applied-energistics-2"
-  version   = md_file.parent.parent.parent.name     # "1.21.1"
-  ```
+- **輸入**：只讀 `data/processed/cleaned/**/*.md`（不讀 extracted JSON 或 manifest）。
+- **metadata 來源**：
 
-  - 三元素在 [2] 就已寫入路徑（見 §4 [2]），[5] 只需解析路徑，不需 slug 化任何東西。
-- **職責**：用 **MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter** 切分
-- **當前模型**：`all-MiniLM-L6-v2`（`max_seq_length = 256`）
-- **切分參數**：
-  - `chunk_size`：200 token
-  - `chunk_overlap`：40–50 token
-  - **tokenizer：MiniLM 的真實 tokenizer**（非字元近似）
-- **切分後斷言**：每個 chunk ≤ 254 wordpieces
-- **輸出**：`data/processed/chunks/chunks.jsonl`
-- **chunk metadata**：
+  | 類別 | 欄位 | 來源 |
+  | --- | --- | --- |
+  | 結構性 | `version`／`mod`／`chapter`／`page` | 目錄路徑（slug 形式）；frontmatter 同名欄位不讀 |
+  | 內容性 | `title`／`source_url` | frontmatter（不重新計算、不改寫）；`source_url` 為空 → 該頁不產出、報錯 |
+  | 章節 | `section` | 標題路徑（如 `Crafting Terminal > The UI`），由 `MarkdownHeaderTextSplitter` 提供 |
 
-  | 欄位 | 說明 |
-  | --- | --- |
-  | `chunk_id` | `{mod_slug}_{page_slug}_{seq}_{version}`，如 `applied-energistics-2_energy_0001_v1` |
-  | `text` | 原文 |
-  | `title` | 頁面標題（從 cleaned MD 的 frontmatter 讀，源頭為 extracted JSON 的 `title`） |
-  | `mod` | 模組（**從路徑讀，slug 形式**，如 `applied-energistics-2`） |
-  | `chapter` | 章節（**從路徑讀，slug 形式**，如 `ae2-mechanics`；無 chapter 的頁為 `other`） |
-  | `page` | 頁面（**從檔名讀，slug 形式**，如 `energy`；非 `title`） |
-  | `section` | 頁面內子標題（MarkdownHeaderTextSplitter 提供） |
-  | `source_url` | 來源 URL（來自 cleaned MD 的 frontmatter；值為 extracted JSON 的 `source`） |
-  | `token_count` | token 數 |
+- **已定的處理方式**：
+  - parent = 一個 `##` 章節（`###` 併入所屬的 `##`）；沒有 `##` 的頁，parent = 整頁；超過上限時再切。
+  - child = 在 parent 內切出的片段，只有 child 進 embedding。
+  - 工具：`MarkdownHeaderTextSplitter` + `RecursiveCharacterTextSplitter`（langchain-text-splitters）；以 **BGE-M3 tokenizer** 計數，並斷言不超過上限。
+  - child 與 parent 都必須帶完整 provenance（`source_url`、`title`、`mod`、`chapter`、`page`、`section`、版本），child 必須能對應到 parent。
+  - slug 只用於路徑、ID 與 `mod`／`chapter`／`page`；`text`、`title`、`section` 禁止 slug 化。
+- **待定**：大小區間與 overlap（先量測 token 分布）、ID 格式（含跨 chapter 同名頁碰撞處理）、parent 產物的檔名與 schema。
 
-  - **`seq` 以 page 為單位**：同一頁的 chunk 從 `0001` 開始遞增（`energy` 頁：`..._energy_0001_v1`、`..._energy_0002_v1`）。
-  - **已知風險（延後處理）**：`chunk_id` 不含 `chapter`，跨 chapter 的同名 page（如 `ae2-mechanics/energy` 與 `items-blocks-machines/energy`）會使 `chunk_id` 碰撞。碰撞實際發生時再解決；預留方案 A：`seq` 改全域遞增；方案 B：`chapter` 加入 `chunk_id`。
+### [6] EMBED — 向量化（`src/embed_chunks.py`）
 
-  - **欄位來源（`mod`／`chapter`／`page` 明確定義，非待定項）**：三者全部由路徑讀取，源頭是 [2] 從 URL 解析寫入的路徑三元素；`title`／`source_url` 由 [4] 從 extracted JSON 原封寫入 cleaned MD 的 frontmatter（`title` 同時寫入 H1），[5] 讀 frontmatter；`section` 由 MarkdownHeaderTextSplitter 提供。
-  - **`title` 欄位（資料不異動原則）**：extracted JSON 的 `title`（trafilatura 抽取結果）由 [4] 原封寫入 cleaned MD 的 frontmatter 與第一個 `#` 標題；[5] **讀 frontmatter** 寫入 chunk metadata，**不重新計算、不改寫**；H1 供 MarkdownHeaderTextSplitter 當結構，非 title 來源。生成答案時直接用 chunk 裡的 `title`，**不回查 extracted JSON**。
-  - **`title` 與 `page` 是兩個獨立欄位**：`title` = 頁面標題原文（如 `Energy`），從 cleaned MD 的 frontmatter 讀；`page` = 路徑 slug（如 `energy`），從檔名讀。兩者不可互相替代。
-  - **`source_url` 來源**：來自 cleaned MD 的 frontmatter，值為 extracted JSON 的 `source`（trafilatura 從 HTML 抽出）；鏈路起點為 `sources.json`（`version` 欄位 + `entry_url` 推導站台根 → [2] 解析 sitemap.xml 產生逐頁 URL → [3] trafilatura 抽取）。`_manifest.json` 的 `url` 是「實際抓取的 URL」，`source_url` 取值以 trafilatura 的 `source` 為準；若 frontmatter 的 `source_url` 為空，[5] 中止該頁處理並報錯（不產出該頁 chunk）。
-  - **權威來源分離**：結構性 metadata（`version`／`mod`／`chapter`／`page`）權威來源為**目錄路徑**，frontmatter 對應欄位 [5] 不讀（僅供人類閱讀）；內容性 metadata（`title`／`source_url`）由 **frontmatter 承載**（路徑推不出）。frontmatter 與 H1 的 `title` 由 [4] 保證一致；若不一致，以 frontmatter 為準。
-  - **frontmatter 與 splitter 的界線待驗證**：frontmatter 是否進 MarkdownHeaderTextSplitter 依其實際行為決定，實作時驗證，本契約不預設（見 §7 待確認）。
-  - **slug 只用於路徑與命名**：`mod`／`chapter`／`page` 欄位為 slug 值，**不可**用於 `text`、`title` 或 `section`（`title`／`section` 保留原始大小寫與空白）。
-  - `chunk_id` 結尾的 `v1` 為**內容修訂號**：該 chunk 內容需要更新時迭代為 `v2`、`v3`。
-- **未來優化**：
-  - `requires`：跨模組關聯（視需要再補）
-- **備註**：未來以 `BAAI/bge-base-en-v1.5` 交叉比對，需同步調整 chunk 大小
+> 框架已定（ADR-003）；輸入格式待實作時定義。
 
-### [6] Embedding
+- **輸入**：[5] 的 child chunks。
+- **已定**：
+  - `BAAI/bge-m3`，由 sentence-transformers 本機載入，只用 dense 向量，1024 維，`normalize_embeddings=True`。
+  - **鎖定 revision**，並把 `model_name`、`model_revision` 寫入輸出。
+  - 輸出逐筆對應輸入 child（順序與 ID 一致，metadata 不得變動），並帶 parent 參照。
+- **待定**：embedding 輸入的拼接格式（slug 前綴或原始 title／section 路徑）。
 
-- **輸入**：`data/processed/chunks/chunks.jsonl`
-- **職責**：對每個 chunk 做向量化
-- **模型**：`sentence-transformers/all-MiniLM-L6-v2`（384 維）
-- **模型 revision：鎖定**
-- **embedding 輸入**：拼接文字（`{mod} | {page} | {section}\n\n{text}`）；其中 `mod`／`page` 為**從路徑讀的 slug 值**（如 `applied-energistics-2`／`energy`），非頁面原始標題——資訊量較標題低，對檢索的實際影響待 [6] 實作時評估
-- **步驟**：
-  1. 讀 `chunks.jsonl`
-  2. 對每個 chunk，拼接 embedding 輸入文字
-  3. 用 MiniLM encode，`normalize_embeddings=True`
-  4. 輸出 `embeddings.jsonl`
-- **輸出**：`data/processed/embeddings/embeddings.jsonl`
-- **`embeddings.jsonl` 每行結構**：
+### [7] INDEX — 寫入 pgvector（`src/index_chunks.py`，擱置）
 
-  ```json
-  {
-    "chunk_id": "...",
-    "text": "...",
-    "title": "...",
-    "mod": "...",
-    "chapter": "...",
-    "page": "...",
-    "section": "...",
-    "source_url": "...",
-    "token_count": 198,
-    "embedding": [...],
-    "model_name": "all-MiniLM-L6-v2",
-    "model_revision": "..."
-  }
-  ```
+- **已定**：PostgreSQL + pgvector；docstore 模式（child 向量進向量庫，parent 文件能由 parent 參照取回）；輸入為 [6] 的向量產物與 [5] 的 parent 產物；向量 1024 維。
+- **擱置**：schema、入庫方式、索引類型，待 [1]–[6] 跑通後依實際資料定義。
 
-### [7] 寫入 pgvector（擱置）
+## 6. 更新行為
 
-- **輸入**：`data/processed/embeddings/embeddings.jsonl`
-- **職責**：把向量和 metadata 寫入 pgvector
-- **技術選型**：pgvector（**已確認合理**）
-- **schema**：待 [1]–[6] 跑通後，根據實際資料定義
-- **入庫方式**：待定
-- **索引類型**：待定
-- **狀態**：擱置，等資料準備後再執行
-
-## 5. 更新行為
-
-| 檔案 | 更新行為 |
+| 產物 | 更新行為 |
 | --- | --- |
 | `sources.json` | 人工維護 |
-| `_manifest.json` | 單次記錄，覆蓋 |
-| `_fetch_log.txt` | 單次記錄，覆蓋；[2] 逐頁成敗 debug log，不入版控 |
-| `extracted/*.json` | 單次記錄，覆蓋 |
-| `extracted_readable/*.md` | 單次記錄，覆蓋；人類驗收用，不入版控，可由 [3] 重產 |
-| `cleaned/*.md` | 單次記錄，覆蓋 |
-| `chunks.jsonl` | 單次記錄，覆蓋 |
-| `embeddings.jsonl` | 單次記錄，覆蓋 |
-| `extraction_report.md` | 單次報告，覆蓋 |
-| `cleaning_report.md` | 單次報告，覆蓋 |
+| `data/raw/_manifest.json`、`_fetch_log.txt` | 單次記錄，覆蓋；`_fetch_log.txt` 為 debug log，不入版控 |
+| `extracted/**/*.json`、`_parse_report.json` | 單次記錄，覆蓋 |
+| `extracted_readable/**/*.md` | 單次記錄，覆蓋；不入版控，可由 [3] 重產 |
+| `cleaned/<version>/**/*.md` | 由 [4] 擁有，每次重建 |
+| [5]／[6] 產物 | 單次記錄，覆蓋 |
+| `reports/*.md` | 單次報告，覆蓋 |
 
-**原則**：所有中間產物都是單次記錄，**不做 history**。各階段可獨立重跑，輸出整份覆寫（冪等）。
+所有中間產物都是單次記錄，**不做 history**；各階段可獨立重跑，整份覆寫（冪等）。
 
-## 6. 關鍵決策記錄
+## 7. 決策索引
 
-| 決策 | 內容 |
+| ADR | 決策 |
 | --- | --- |
-| 廢棄 `sources.json` 的舊形式 | 從「6 頁人工清單」改為「入口 URL + 版本 + 模組」 |
-| **[2] URL 真值來源 = sitemap.xml** | 站台為 Next.js SPA，側邊欄情境式展開且 `items-blocks-machines` 索引為 CSR；側邊欄 BFS 僅得 39/124。改以 sitemap 為真值來源（1.21.1 共 125 URL，排除入口 124），**廢除側邊欄爬取、不保留 fallback**（見 `docs/adr/ADR-001`） |
-| 抓取與抽取分離 | `fetch_pages.py` 只抓取，`extract_pages.py` 用 trafilatura 抽取 |
-| 目錄按版本／模組／章節分 | `data/raw/<version>/<mod_slug>/<chapter>/`；metadata 由路徑承載，下游不讀 JSON |
-| `mod` 來源 | `sources.json` 存模組**原名**（`Applied Energistics 2`）；[2] 以 `python-slugify` 轉 `mod_slug` 寫入路徑（slug 只用於路徑與命名） |
-| `chapter`／`page_slug` 來源 | [2] 從 URL 解析（chapter 為去版本前綴之倒數第二段，無 chapter 的頁歸 `other`；page_slug 為最後一段），URL 本已是 slug 不另行 slug 化 |
-| `title` 帶入 chunk metadata | extracted JSON 的 `title` 由 [4] 寫入 cleaned MD 的 frontmatter（與 H1），[5] 讀 frontmatter；生成答案直接用 chunk 的 `title`，不回查 JSON（資料不異動） |
-| cleaned MD 保留 frontmatter 與 H1 | frontmatter 承載 `title`／`source_url` 供 [5] 讀 metadata；H1 供 MarkdownHeaderTextSplitter 當結構；各按各的邏輯索取（見 §4 [4]／[5]） |
-| 單次記錄，覆蓋 | 所有中間產物都是單次記錄，不做 history |
-| `chunk_id` 格式 | `{mod_slug}_{page_slug}_{seq}_{version}`，如 `applied-energistics-2_energy_0001_v1`；結尾版本號為內容修訂號，chunk 更新時迭代 |
-| embedding 輸入拼接 | `{mod} \| {page} \| {section}\n\n{text}` |
-| pgvector 選型確認 | 合理，schema 待資料準備後定義 |
+| `ADR-001` | [2] 以 sitemap.xml 為 URL 真值來源，廢除側邊欄爬取、不保留 fallback |
+| `ADR-002` | [4] 噪音規則（無圖片版本）：R2 → R1 → R4a → R4b → 空 body 守衛；不回 [3] 重抽 |
+| `ADR-003` | Embedding 改用 BGE-M3（dense、1024 維、revision 鎖定），取代 MiniLM |
+| `ADR-004` | 保留頁內標題結構：[3] 產生 `markdown`、[4] 新增 R6 |
+| `ADR-005` | [5] 採子母分層切分（docstore 模式） |
 
-## 7. 待確認事項
+其他已定的架構原則（尚未寫成 ADR）：
+
+- 抓取與抽取分離。
+- metadata 依「結構性看路徑、內容性看 frontmatter」分工。
+- `title` 全程不異動。
+- 中間產物不做 history。
+
+## 8. 待確認事項
 
 | 事項 | 狀態 |
 | --- | --- |
-| [4] 噪音規則 | 待第一波資料處理後確認 |
-| frontmatter 是否進 MarkdownHeaderTextSplitter | **待實作驗證**：依 splitter 實際行為決定，契約不預設（見 §4 [5]） |
-| [5] 同名 page `chunk_id` 碰撞 | **延後處理**：`chunk_id` 不含 chapter；碰撞實際發生時在方案 A（seq 全域遞增）與方案 B（chapter 入 ID）間擇一 |
-| [7] schema | 待 [1]–[6] 跑通後定義 |
-| [7] 入庫方式 | 待定 |
-| [7] 索引類型 | 待定 |
-| 舊版資料產物清除 | 已確認清除、不保留（見 §9） |
-
-> `mod`／`chapter`／`page_slug` 的推導規則**已定義**（見 §4 [2]），不再列為待確認項。
-
-## 8. 本階段不處理
-
-- **不要在這一階段定義 [4] 的噪音規則**
-- **不要在這一階段定義 [7] 的 schema**
-- **不要在這一階段做 [7] 的入庫實作**
-
-## 9. 舊架構產物處置
-
-重整為本架構時，下列舊格式產物**已確認清除、不保留**：
-
-- `data/raw/<host>/*.html`（舊目錄分層，6 份）
-- `data/processed/<host>/*.md`（舊目錄分層，6 份）
-- `data/chunks.jsonl`（舊 chunk schema，32 chunks）
-- `data/embeddings.jsonl`（舊 embedding schema，32 筆）
-
-理由：舊產物的目錄分層（`<host>/`）、切分策略與 chunk schema 與本文件 [1]–[6] 皆不相容，保留只會造成新舊兩套資料並存的混淆；新管線跑通後以新路徑整份重產生。
-
-舊架構的已知結構問題一併由本架構解決：
-
-| 舊問題 | 本架構解法 |
-| --- | --- |
-| `index` 頁導覽 chunk 為檢索噪音 | [1] 入口頁僅作導航來源，不作為抓取目標 |
-| 自寫 HTML→Markdown renderer 為主要 bug 來源 | [3] 改用 trafilatura，[2] 只負責網路 I/O |
-| `chunk_id` 頁內編號、非全域唯一 | [5] 改為 `{mod_slug}_{page_slug}_{seq}_{version}`（如 `applied-energistics-2_energy_0001_v1`） |
-| embedding 模型 revision 未鎖定、不可重現 | [6] revision 鎖定並記錄於輸出 |
-| chunk 目標尺寸超出模型上限、尾端被截斷 | [5] chunk_size 200 + 真 tokenizer + ≤254 wordpieces 斷言 |
-| token 估算為字元近似 | [5] 改用 MiniLM 真實 tokenizer 計數 |
+| [5] child／parent 大小區間、overlap | 待以 BGE-M3 tokenizer 量測 cleaned MD 後定案 |
+| [5] ID 格式、parent 產物格式 | 待 [5] 實作時定義（含跨 chapter 同名頁碰撞） |
+| [5] frontmatter 是否會被 `MarkdownHeaderTextSplitter` 當成內容 | 待實作驗證 |
+| [6] embedding 輸入拼接格式 | 待 [6] 實作時定義 |
+| 查詢語言策略（英文檢索 + 繁中回答） | BGE-M3 支援多語言，可重新評估（範圍外，另行決策） |
+| [7] schema、入庫方式、索引類型 | 擱置 |
