@@ -24,7 +24,8 @@
 | `version` | Minecraft 版本；決定目錄分層，並一路傳到 chunk |
 | `mod` | 模組**原名**，不 slug 化；由本階段轉成 `mod_slug` |
 | `entry_url` | 只用來推導站台根（scheme + host），**不作為抓取目標**；版本取自 `version`，不由入口頁推導 |
-| `exclude`／`include` | 保留於 schema；目前不讀取（範圍由版本過濾決定） |
+| `exclude` | 人工確認要排除的網址（例如跳轉頁）。抓取仍會抓取，由 [抽取](02_extract.md) 跳過；比對時去掉結尾 `/`。加入網址屬於修改知識來源，須使用者授權 |
+| `include` | 保留於 schema；目前不讀取（範圍由版本過濾決定） |
 
 `sources.json` 是整條 URL 鏈的起點：`version` + 站台根 → 本階段解析 sitemap.xml 產生逐頁 URL → [抽取](02_extract.md) 抽出 `source` → chunk 的 `source_url`。
 
@@ -128,4 +129,4 @@ sitemap 驗證（2026-09-27）：`robots.txt` 宣告 `https://guide.appliedenerg
 
 | 事項 | 狀態 |
 | --- | --- |
-| `exclude`／`include` 是否啟用 | 保留欄位；需要時再定義 |
+| `include` 是否啟用 | 保留欄位；需要時再定義 |

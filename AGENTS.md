@@ -112,7 +112,7 @@ pipeline 模組一律放在 `src/`，以 `PROJECT_ROOT = Path(__file__).resolve(
 | --- | --- | --- | --- |
 | [1] 入口 | 人工維護 | `sources.json` | 入口頁只推導站台根，不抓取；版本取自 `version` 欄位 |
 | [2] 抓取 | `sources.json` + sitemap.xml | `data/raw/<version>/<mod_slug>/<chapter>/*.html`、`_manifest.json` | URL 真值來源只有 sitemap.xml，無可用 sitemap → fail-fast，不 fallback（`docs/01_fetch.md`）；不解析導覽 DOM；路徑三元素只在 [2] 計算 |
-| [3] 抽取 | raw HTML + `_manifest.json` | `extracted/**/*.json`、報告、人類可讀衍生物 | trafilatura 原始欄位不異動；`markdown` 只加標題記號（`docs/02_extract.md`）；navigation_only 頁不輸出 |
+| [3] 抽取 | raw HTML + `_manifest.json` | `extracted/**/*.json`、報告、人類可讀衍生物 | trafilatura 原始欄位不異動；`markdown` 只加標題記號（`docs/02_extract.md`）；navigation_only 頁與 `sources.json` 的 `exclude` 網址不輸出；跳轉頁候選只列清單，須人工確認並加入 `exclude` 才排除 |
 | [4] 清理 | extracted JSON | `cleaned/**/*.md`、`cleaning_report.md` | 噪音規則、標題正規化、空章節移除依 `docs/03_clean.md`；規則只作用於正文；被排除的頁不輸出、以報告為憑 |
 | [5] 切分 | cleaned MD | child chunks + parent 文件 | 只讀 cleaned MD；子母分層；以 BGE-M3 tokenizer 計數並斷言上限（`docs/04_chunk.md`）；`source_url` 為空的頁不產出 |
 | [6] Embedding | child chunks | child + 向量 | BGE-M3、1024 維、正規化、revision 鎖定（`docs/05_embed.md`）；與輸入逐筆對應 |
@@ -251,7 +251,7 @@ Agent 不得宣稱未執行的驗證為成功。
 | Change | Validation | Acceptance Criteria |
 | --- | --- | --- |
 | [2] Fetch | `python src/fetch_pages.py` | `_manifest.json` 存在且每頁記錄 `http_status`；結束碼 0（有失敗記錄時為 1，須如實回報） |
-| [3] Extract | `python src/extract_pages.py` | 每份 `extracted/*.json` 可解析，含 `title`／`source`／非空 `text`／`markdown`；`markdown` 去掉標題記號後逐行等於 `text`；`extraction_report.md` 產出，標出 `source`（與 `title`）為空的頁、未對應的標題，並列出跳轉頁候選清單（只列不排除，待人工複核）；`extracted_readable/*.md` 數 = `parsed_count`，`_index.md` 產出 |
+| [3] Extract | `python src/extract_pages.py` | 每份 `extracted/*.json` 可解析，含 `title`／`source`／非空 `text`／`markdown`；`markdown` 去掉標題記號後逐行等於 `text`；`extraction_report.md` 產出，標出 `source`（與 `title`）為空的頁、未對應的標題，並列出尚未確認的跳轉頁候選清單（只列不排除，待人工複核）；`exclude` 中的網址皆被跳過；`extracted_readable/*.md` 數 = `parsed_count`，`_index.md` 產出 |
 | [4] Clean | `python src/clean_pages.py` | `cleaned/*.md` 產出、非空，含 frontmatter（至少 `title`、`source_url`），frontmatter 與 `# <title>` 之間有空行；每頁恰好一個 `#`，沒有白名單標籤的標題行，沒有空章節（標題底下必有內容）；被契約排除的頁不產出檔案，以 `cleaning_report.md` 為憑；**對帳：輸出頁數 + 報告列出的跳過頁數 = 輸入頁數**；輸出每一行去掉標題記號後，是某個輸入行或其子字串（純刪除檢查）；連跑兩次輸出相同 |
 | [5] Chunk | `python src/chunk_pages.py` | 至少：每筆可解析且 provenance 欄位非空；每個 child 都能對應到 parent；parent ≤ 1024、child ≤ 256 tokens（BGE-M3 tokenizer，只算正文）斷言通過。欄位清單待 `docs/04_chunk.md` 定案後補入 |
 | [6] Embed | `python src/embed_chunks.py` | 每筆 1024 維、norm = 1、`model_revision` 非空；與輸入 child 逐筆對應（順序與 ID 一致、metadata 不變） |

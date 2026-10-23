@@ -35,6 +35,7 @@ EXTRACTED_DIR = PROJECT_ROOT / "data" / "processed" / "extracted"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
 MANIFEST_PATH = RAW_DIR / "_manifest.json"
+SOURCES_PATH = PROJECT_ROOT / "sources.json"   # 共用設定：exclude 為人工確認要排除的網址
 PARSE_REPORT_PATH = EXTRACTED_DIR / "_parse_report.json"
 EXTRACTION_REPORT_PATH = REPORTS_DIR / "extraction_report.md"
 
@@ -70,6 +71,15 @@ def load_manifest(path: Path) -> dict:
         raise FileNotFoundError(f"找不到 {path}：請先執行 [2] src/fetch_pages.py")
     with path.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_excluded_urls(path: Path) -> set:
+    """讀 sources.json 的 exclude（人工確認要排除的網址），回傳去掉結尾斜線的集合。"""
+    if not path.exists():
+        raise FileNotFoundError(f"找不到 {path}：[1] sources.json 不存在")
+    with path.open(encoding="utf-8") as f:
+        sources = json.load(f)
+    return {url.rstrip("/") for url in sources.get("exclude", [])}
 
 
 def collected_html_files(manifest: dict) -> list:
@@ -362,18 +372,18 @@ def write_extraction_report(path: Path, manifest: dict, stats: dict) -> None:
     lines.append(f"- URL 真值來源：{manifest.get('source', 'sitemap')}（sitemap.xml）")
     lines.append(f"- 處理頁數（成功抓取）：{stats['total']}")
     lines.append(f"- parsed（已輸出 extracted JSON）：{stats['parsed_count']}")
-    lines.append(f"- skipped（navigation_only）：{len(stats['skipped'])}")
+    lines.append(f"- skipped（navigation_only、sources.json exclude）：{len(stats['skipped'])}")
     lines.append(f"- errors：{len(stats['errors'])}")
-    lines.append(f"- 跳轉頁候選（只列清單，未排除）：{len(stats['redirect_candidates'])}")
+    lines.append(f"- 尚未確認的跳轉頁候選（只列清單，未排除）：{len(stats['redirect_candidates'])}")
     lines.append(f"- 標題對應（<article> h1–h3 → markdown）：matched {stats['headings_matched']}"
                  f"／unmatched {len(stats['headings_unmatched'])}")
     lines.append("")
 
     if stats["redirect_candidates"]:
-        lines.append("## 跳轉頁候選（待人工複核；本次未排除）")
+        lines.append("## 尚未確認的跳轉頁候選（待人工複核；未排除）")
         lines.append("")
         lines.append("判定：`<article>` 去掉 h1 後只有一個連結，且其餘文字只有 `See`。")
-        lines.append("請確認每一列確實是跳轉頁、指向的正式頁面存在；確認後才排除。")
+        lines.append("請確認每一列確實是跳轉頁、指向的正式頁面存在；確認後把網址加入 sources.json 的 exclude 即會跳過。")
         lines.append("")
         lines.append("| URL | title | 指向 | 指向頁已在輸出中 |")
         lines.append("| --- | --- | --- | --- |")
@@ -394,7 +404,7 @@ def write_extraction_report(path: Path, manifest: dict, stats: dict) -> None:
         lines.append("")
 
     if stats["skipped"]:
-        lines.append("## Skipped（navigation_only）")
+        lines.append("## Skipped（navigation_only 與 sources.json exclude）")
         lines.append("")
         lines.append("| URL | reason |")
         lines.append("| --- | --- |")
@@ -447,12 +457,21 @@ def main() -> int:
     parsed_count = 0
     headings_matched = 0
     headings_unmatched = []  # 標題對應不到 text 的行（報告用，不影響 exit code）
-    redirect_candidates = []  # 跳轉頁候選：只列清單供人工複核，本階段不排除
+    redirect_candidates = []  # 尚未確認的跳轉頁候選：只列清單供人工複核，不排除
+    excluded_urls = load_excluded_urls(SOURCES_PATH)
 
     for entry in html_entries:
         url = entry["url"]
         html_path = PROJECT_ROOT / entry["local_path"]
         html = html_path.read_text(encoding="utf-8")
+
+        # sources.json 的 exclude：人工確認要排除的網址 → 跳過，不輸出
+        if url.rstrip("/") in excluded_urls:
+            is_redirect, _, _ = redirect_link(html)
+            reason = "redirect_page" if is_redirect else "excluded_by_sources"
+            skipped.append({"url": url, "reason": reason})
+            print(f"  SKIP {url} -> {reason}")
+            continue
 
         # 抽取：trafilatura 無法抽出 -> 記錄錯誤，繼續其他頁（不中斷）
         extracted = extract_page(html)

@@ -2,6 +2,9 @@
   "version": "1.21.1",
   "mod": "Applied Energistics 2",
   "entry_url": "https://guide.appliedenergistics.org/1.21.1/index",
-  "exclude": [],
+  "exclude": [
+    "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/p2p-tunnels/",
+    "https://guide.appliedenergistics.org/1.21.1/ae2-mechanics/quantum-bridge/"
+  ],
   "include": []
 }

@@ -35,7 +35,7 @@
 | 模塊 | 文件 | 程式 | 輸入 | 輸出位置 |
 | --- | --- | --- | --- | --- |
 | 來源設定與抓取 | `docs/01_fetch.md` | `src/fetch_pages.py` | `sources.json`、sitemap.xml | `data/raw/` |
-| 抽取 | `docs/02_extract.md` | `src/extract_pages.py` | raw HTML、`_manifest.json` | `data/processed/extracted/`（另有 `extracted_readable/`） |
+| 抽取 | `docs/02_extract.md` | `src/extract_pages.py` | raw HTML、`_manifest.json`、`sources.json`（`exclude`） | `data/processed/extracted/`（另有 `extracted_readable/`） |
 | 清理 | `docs/03_clean.md` | `src/clean_pages.py` | extracted JSON | `data/processed/cleaned/` |
 | 切分 | `docs/04_chunk.md` | `src/chunk_pages.py`（尚未實作） | cleaned MD | `data/processed/chunks/` |
 | 向量化 | `docs/05_embed.md` | `src/embed_chunks.py`（尚未實作） | child chunks | `data/processed/embeddings/` |

@@ -11,6 +11,7 @@
 
 - `data/raw/<version>/<mod_slug>/<chapter>/*.html`
 - `data/raw/_manifest.json`（取 `http_status`、`local_path`；格式見 [01_fetch.md](01_fetch.md)）
+- `sources.json` 的 `exclude`（共用設定；人工確認要排除的網址）
 
 ### 輸出
 
@@ -40,7 +41,7 @@
 **其他輸出**：
 
 - `data/processed/extracted/_parse_report.json`：`{ parsed_count, skipped: [{url, reason}], warnings: [{url?, phase, error}], errors: [] }`。
-  - `reason` 只能是下方兩個規則字串之一（`navigation_only` 是類別名稱，不是合法的 `reason` 值）。
+  - `reason` 只能是 `url_ends_with_index`、`short_text_high_link_density`、`redirect_page`、`excluded_by_sources` 之一（`navigation_only` 是類別名稱，不是合法的 `reason` 值）。
   - `warnings` 記非致命問題（例如 .md 衍生物寫入失敗），不影響 exit code。
 - `reports/extraction_report.md`：計數、跳過頁、**跳轉頁候選清單（待人工複核）**、空 `source`／`title` 警示、標題對應數與未對應清單（覆寫，不入版控）。
 - `data/processed/extracted_readable/**/*.md` + `_index.md`：人類驗收用。路徑鏡像 JSON；內容為 front matter（`title`／`source`／`hostname`／`http_status`／`text_length`）+ `# {title}` + `text` 原文。真值以 JSON 為準；寫入失敗只記 warning；不入版控，可重產。
@@ -48,6 +49,7 @@
 ## 2. 處理方法
 
 1. 從 manifest 取成功抓取的頁面（`local_path` 不為 null）。
+   - 網址（去掉結尾 `/`）在 `sources.json` 的 `exclude` 中 → 跳過、不輸出：符合跳轉頁結構時 `reason` 為 `redirect_page`，否則為 `excluded_by_sources`。
 2. trafilatura 抽取（直接吃 HTML 字串，不經 BeautifulSoup 預處理）：
 
    ```python
@@ -62,7 +64,7 @@
    | 規則二（內容） | 抽出文字 < 200 字元 **且** `<article>` 內連結密度 > 0.5 | `short_text_high_link_density` |
 
    連結密度 = `<article>` 內 `<a>` 文字長度 ÷ `<article>` 可見文字長度；沒有 `<article>` 時視為不命中。
-4. **跳轉頁候選（只列清單，不排除）**：`<article>` 去掉 h1 後**剛好一個連結**，且扣掉連結文字後**只剩 `See`** → 列入報告的「跳轉頁候選」，並標出指向的頁面是否也在輸出中。本階段**不跳過**這些頁；人工複核確認後再排除（方式待定）。判定不看字數。
+4. **尚未確認的跳轉頁候選（只列清單，不排除）**：`<article>` 去掉 h1 後**剛好一個連結**，且扣掉連結文字後**只剩 `See`** → 列入報告的「尚未確認的跳轉頁候選」，並標出指向的頁面是否也在輸出中。判定不看字數。人工複核確認後，把網址加入 `sources.json` 的 `exclude`，下次執行即會跳過（步驟 1）。
 5. **標題結構**：讀 `<article>` 的 h1–h3（`get_text(" ", strip=True)`），依文件順序用游標往下，在 `text` 中找去前後空白後完全相同的行，加上 `'#' × 原層級 + ' '`，產生 `markdown`。
    - 找不到的標題不加記號、不移動游標，記入報告。
    - **不正規化層級、不判斷噪音**：這兩件事由 [清理](03_clean.md) 負責。
@@ -97,7 +99,7 @@
 
 改由本階段看 HTML 結構：連結數必須剛好一個，且沒有任何說明文字。反例 `fluix_dust` 有 3 個連結與說明文字、`main-network`／`crank` 只有 1 個連結但有 138／141 字元的說明，都不會命中。對新舊兩種 HTML 全量掃描，都只命中上述 2 頁。
 
-站台剛改變建置方式，先只列清單、人工複核，確認判定沒有誤算後再排除。
+站台剛改變建置方式，先只列清單、人工複核，確認判定沒有誤算後再排除。2026-10-23 人工確認 `ae2-mechanics/p2p-tunnels`、`ae2-mechanics/quantum-bridge` 為跳轉頁，已加入 `exclude`；它們指向的最終頁 `items-blocks-machines/p2p_tunnels`、`items-blocks-machines/quantum_bridge` 保留。確認結果放在人工維護的 `sources.json`，而不是寫死在程式，以後新的跳轉頁仍須經人工確認才會排除。
 
 ### 為什麼同時保留 `text` 與 `markdown`
 
@@ -118,12 +120,12 @@
 - `markdown` 去掉標題記號後逐行等於 `text`。
 - `extraction_report.md` 產出，標出 `source`（與 `title`）為空的頁，以及未對應的標題。
 - `extracted_readable/*.md` 數 = `parsed_count`，`_index.md` 產出。
-- 報告列出跳轉頁候選清單；人工確認每一列確實是跳轉頁，且「指向頁已在輸出中」為「是」。
+- `exclude` 中的網址都被跳過（`redirect_page` 或 `excluded_by_sources`）。
+- 報告列出尚未確認的跳轉頁候選；人工確認每一列確實是跳轉頁，且「指向頁已在輸出中」為「是」。
 - 站方改版時，檢查報告中的未對應標題是否只有頁首 H1 與 `Recipe`／`Recipes`。
 
 ## 6. 待定事項
 
 | 事項 | 狀態 |
 | --- | --- |
-| 跳轉頁候選確認後如何排除 | 待人工複核結果；排除方式（例如抽取跳過、清理排除、或 `sources.json` 的 `exclude`）待決定 |
 | 新 HTML 下的抽取品質（黏行、物品名稱、配方標籤） | 待盤點（見 [T8](07_troubleshooting.md#t8-站台建置方式改變內容未更新)） |
