@@ -10,7 +10,8 @@
 規則依目前這批資料校準；網站加入圖片相關內容後須重新盤點（見 docs/03_clean.md）。
 
 規則集（有序，AGENTS.md §6 [4]）：
-- R2 跳轉頁排除：首行 == 站名 且 全頁文字長度 < 門檻 → 不輸出
+- R2 站名首行警告：首行 == 站名 → 照常輸出，報告列為警告（不排除、不看字數；跳轉頁改由抽取列清單，
+  人工複核後再排除，見 docs/03_clean.md）
 - R1 首行標題去重：A 首行 == title 刪首行／B title 黏在句首切前綴／C 次行 == title 刪次行
 - R4a 整行標籤：整行（去空白）完全等於標籤詞 → 刪該行
 - R4b 黏合尾端標籤：行尾黏合的標籤序列，自第一個 Recipe/Recipes 起到行尾
@@ -46,7 +47,6 @@ SOURCES_PATH = PROJECT_ROOT / "sources.json"
 REPORT_PATH = REPORTS_DIR / "cleaning_report.md"
 
 SITE_NAME = "Applied Energistics 2"
-REDIRECT_MAX_LENGTH = 110        # R2 門檻（人工裁定，依據見 docs/03_clean.md）
 SHORT_BODY_THRESHOLD = 200       # body 短於此字元數 → 報告標示（仍輸出）
 
 # 配方標籤白名單。排列順序為「長 token 優先」，是 R4b 貪婪切割的必要條件
@@ -121,15 +121,8 @@ def content_of(line: str) -> str:
     return split_heading(line)[1]
 
 
-def is_redirect(text: str) -> bool:
-    """R2：首行（去空白）等於站名，且全頁文字長度小於門檻。"""
-    lines = text.split("\n")
-    first = lines[0].strip() if lines else ""
-    return first == SITE_NAME and len(text) < REDIRECT_MAX_LENGTH
-
-
 def starts_with_site_name(text: str) -> bool:
-    """R2 安全網：首行等於站名（不論長度），供報告警告未排除者。"""
+    """R2：首行等於站名，供報告警告（可能是跳轉頁；不排除）。"""
     lines = text.split("\n")
     first = lines[0].strip() if lines else ""
     return first == SITE_NAME
@@ -347,7 +340,7 @@ def process_page(record: dict) -> tuple:
     title = record.get("title") or ""
     source = record.get("source") or ""
     markdown = record.get("markdown") or ""
-    # R2 門檻與字元統計沿用 docs/03_clean.md 的校準基準：不含標題記號的純文字
+    # R2 判定與字元統計使用不含標題記號的純文字
     text = "\n".join(content_of(ln) for ln in markdown.split("\n"))
     log = {
         "title": title,
@@ -377,17 +370,9 @@ def process_page(record: dict) -> tuple:
         log["skip_reason"] = "missing_title_or_source"
         return None, log
 
-    # R2 跳轉頁排除
-    if is_redirect(text):
-        log["redirect"] = True
-        log["skip_reason"] = "redirect_page"
-        return None, log
+    # R2 站名首行警告：不排除、不看字數（跳轉頁由抽取列清單，人工複核後再排除）
     if starts_with_site_name(text):
-        # 安全網（人工裁定 1）：首行是站名卻未達排除門檻 → 警告
-        log["site_name_not_excluded"] = True
-        log["notes"].append(
-            f"首行為站名但長度 {len(text)} >= 門檻 {REDIRECT_MAX_LENGTH}，已輸出，請人工查驗"
-        )
+        log["site_name_not_excluded"] = True      # 報告附錄列為警告（見 write_cleaning_report）
 
     lines = markdown.split("\n")
 
@@ -543,7 +528,6 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
     lines.append(f"- 輸出頁數（cleaned MD）：{len(outputs)}")
     lines.append(f"- 跳過頁數：{len(skipped)}")
     for reason, label in [
-        ("redirect_page", "跳轉頁（R2）"),
         ("missing_title_or_source", "title 或 source 為空"),
         ("empty_body", "規則處理後 body 為空"),
     ]:
@@ -573,7 +557,7 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
     lines.append(f"- R1 首行標題去重：A={r1_counts['A']} B={r1_counts['B']} C={r1_counts['C']}")
     lines.append(f"- R4a 整行標籤：{r4a_pages} 頁，{r4a_lines} 行，{r4a_chars} 字元")
     lines.append(f"- R4b 黏合尾端標籤：{r4b_pages} 頁，{r4b_occ} 處，{r4b_chars} 字元")
-    lines.append(f"- R2 跳轉頁排除：{sum(1 for _, log, _ in pages if log['redirect'])} 頁")
+    lines.append(f"- R2 站名首行警告（未排除）：{sum(1 for _, log, _ in pages if log['site_name_not_excluded'])} 頁")
     level_totals = {}
     for _, log, _ in outputs:
         for level, n in log["heading_counts"].items():
@@ -734,7 +718,7 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
     lines.append("**Risks**")
     lines.append("")
     lines.append("- 標籤白名單與 R4b 的前提皆依本批資料校準；新頁或站方改版需重驗")
-    lines.append("- R2 門檻為本批校準值（最長跳轉頁與最短內容頁之間），新增短頁時需重驗")
+    lines.append("- 跳轉頁不在本階段排除；由抽取報告列出候選，人工複核後再決定")
     lines.append("- R1-B 前綴切割與 R4b 尾端切除會改變 `text` 的字元內容；`title`／`source` 欄位全程不動")
     lines.append("")
 
@@ -742,7 +726,7 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
     warnings = []
     for rel, log, _ in pages:
         if log["site_name_not_excluded"]:
-            warnings.append((rel, "首行為站名但長度未達 R2 門檻，已輸出，請人工查驗"))
+            warnings.append((rel, "首行為站名（可能是跳轉頁，見抽取報告的跳轉頁候選），已輸出，請人工查驗"))
         for note in log["notes"]:
             warnings.append((rel, note))
         if log.get("error"):

@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import trafilatura
 from bs4 import BeautifulSoup
@@ -56,6 +56,9 @@ EXTRACTED_FIELDS = ("title", "text", "source", "hostname")
 
 # 標題結構：只取 <article> 內 h1–h3（docs/02_extract.md）
 HEADING_TAGS = ("h1", "h2", "h3")
+
+# 跳轉頁候選：正文（去掉 h1 與唯一連結後）只剩這個字（結構判定，不看字數）
+REDIRECT_MARKER = "See"
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +106,8 @@ def extract_page(html: str) -> dict:
 # [3.3] navigation_only 判定
 # ---------------------------------------------------------------------------
 def is_index_page(url: str) -> bool:
-    """規則一：URL path 以 '-index' 結尾（如 .../ae2-mechanics/ae2-mechanics-index）。"""
-    path = urlparse(url).path
+    """規則一：URL path（去掉結尾斜線後）以 '-index' 結尾（如 .../ae2-mechanics/ae2-mechanics-index/）。"""
+    path = urlparse(url).path.rstrip("/")
     return path.endswith("-index")
 
 
@@ -175,6 +178,29 @@ def build_markdown(text: str, headings: list) -> tuple:
         cursor = found + 1
         matched += 1
     return "\n".join(lines), matched, unmatched
+
+
+def redirect_link(html: str) -> tuple:
+    """跳轉頁候選判定（結構判定，不看字數；見 docs/02_extract.md）。
+
+    <article> 去掉 h1 後，剛好一個 <a>，且扣掉連結文字後只剩 "See" → 候選。
+    回傳 (是否候選, 連結 href, 連結文字)。本函式只判定，是否排除由人工複核後決定。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.find("article")
+    if article is None:
+        return False, "", ""
+    for h1 in article.find_all("h1"):
+        h1.decompose()
+    links = article.find_all("a")
+    if len(links) != 1:
+        return False, "", ""
+    link_text = links[0].get_text(" ", strip=True)
+    rest = " ".join(article.get_text(" ").split())
+    rest = " ".join(rest.replace(link_text, "", 1).split())
+    if rest != REDIRECT_MARKER:
+        return False, "", ""
+    return True, links[0].get("href") or "", link_text
 
 
 def is_navigation_only(url: str, extracted: dict, html: str) -> tuple:
@@ -338,9 +364,24 @@ def write_extraction_report(path: Path, manifest: dict, stats: dict) -> None:
     lines.append(f"- parsed（已輸出 extracted JSON）：{stats['parsed_count']}")
     lines.append(f"- skipped（navigation_only）：{len(stats['skipped'])}")
     lines.append(f"- errors：{len(stats['errors'])}")
+    lines.append(f"- 跳轉頁候選（只列清單，未排除）：{len(stats['redirect_candidates'])}")
     lines.append(f"- 標題對應（<article> h1–h3 → markdown）：matched {stats['headings_matched']}"
                  f"／unmatched {len(stats['headings_unmatched'])}")
     lines.append("")
+
+    if stats["redirect_candidates"]:
+        lines.append("## 跳轉頁候選（待人工複核；本次未排除）")
+        lines.append("")
+        lines.append("判定：`<article>` 去掉 h1 後只有一個連結，且其餘文字只有 `See`。")
+        lines.append("請確認每一列確實是跳轉頁、指向的正式頁面存在；確認後才排除。")
+        lines.append("")
+        lines.append("| URL | title | 指向 | 指向頁已在輸出中 |")
+        lines.append("| --- | --- | --- | --- |")
+        for c in stats["redirect_candidates"]:
+            title = (c["title"] or "").replace("|", "\\|")
+            in_kb = "是" if c["target"].rstrip("/") in stats["parsed_urls"] else "**否**"
+            lines.append(f"| {c['url']} | {title} | {c['target']} | {in_kb} |")
+        lines.append("")
 
     if stats["headings_unmatched"]:
         lines.append("## 未對應標題（text 中找不到完全相同的行，markdown 不加記號）")
@@ -406,6 +447,7 @@ def main() -> int:
     parsed_count = 0
     headings_matched = 0
     headings_unmatched = []  # 標題對應不到 text 的行（報告用，不影響 exit code）
+    redirect_candidates = []  # 跳轉頁候選：只列清單供人工複核，本階段不排除
 
     for entry in html_entries:
         url = entry["url"]
@@ -425,6 +467,17 @@ def main() -> int:
             skipped.append({"url": url, "reason": reason})
             print(f"  SKIP {url} -> {reason}")
             continue
+
+        # 跳轉頁候選：只記錄，不跳過（人工複核後再決定是否排除）
+        is_redirect, href, link_text = redirect_link(html)
+        if is_redirect:
+            redirect_candidates.append({
+                "url": url,
+                "title": extracted.get("title"),
+                "target": urljoin(url, href),
+                "link_text": link_text,
+            })
+            print(f"  NOTE {url} -> 跳轉頁候選（指向 {urljoin(url, href)}）")
 
         # 標題結構：<article> h1–h3 依序對應 text 的行，產生 markdown
         markdown, matched, unmatched = build_markdown(extracted.get("text") or "",
@@ -483,6 +536,8 @@ def main() -> int:
         "parsed_detail": parsed_detail,
         "headings_matched": headings_matched,
         "headings_unmatched": headings_unmatched,
+        "redirect_candidates": redirect_candidates,
+        "parsed_urls": {d["url"].rstrip("/") for d in parsed_detail},
     }
     write_parse_report(PARSE_REPORT_PATH, parsed_count, skipped, errors, warnings)
     write_extraction_report(EXTRACTION_REPORT_PATH, manifest, stats)

@@ -251,7 +251,7 @@ Agent 不得宣稱未執行的驗證為成功。
 | Change | Validation | Acceptance Criteria |
 | --- | --- | --- |
 | [2] Fetch | `python src/fetch_pages.py` | `_manifest.json` 存在且每頁記錄 `http_status`；結束碼 0（有失敗記錄時為 1，須如實回報） |
-| [3] Extract | `python src/extract_pages.py` | 每份 `extracted/*.json` 可解析，含 `title`／`source`／非空 `text`／`markdown`；`markdown` 去掉標題記號後逐行等於 `text`；`extraction_report.md` 產出，標出 `source`（與 `title`）為空的頁與未對應的標題；`extracted_readable/*.md` 數 = `parsed_count`，`_index.md` 產出 |
+| [3] Extract | `python src/extract_pages.py` | 每份 `extracted/*.json` 可解析，含 `title`／`source`／非空 `text`／`markdown`；`markdown` 去掉標題記號後逐行等於 `text`；`extraction_report.md` 產出，標出 `source`（與 `title`）為空的頁、未對應的標題，並列出跳轉頁候選清單（只列不排除，待人工複核）；`extracted_readable/*.md` 數 = `parsed_count`，`_index.md` 產出 |
 | [4] Clean | `python src/clean_pages.py` | `cleaned/*.md` 產出、非空，含 frontmatter（至少 `title`、`source_url`），frontmatter 與 `# <title>` 之間有空行；每頁恰好一個 `#`，沒有白名單標籤的標題行，沒有空章節（標題底下必有內容）；被契約排除的頁不產出檔案，以 `cleaning_report.md` 為憑；**對帳：輸出頁數 + 報告列出的跳過頁數 = 輸入頁數**；輸出每一行去掉標題記號後，是某個輸入行或其子字串（純刪除檢查）；連跑兩次輸出相同 |
 | [5] Chunk | `python src/chunk_pages.py` | 至少：每筆可解析且 provenance 欄位非空；每個 child 都能對應到 parent；parent ≤ 1024、child ≤ 256 tokens（BGE-M3 tokenizer，只算正文）斷言通過。欄位清單待 `docs/04_chunk.md` 定案後補入 |
 | [6] Embed | `python src/embed_chunks.py` | 每筆 1024 維、norm = 1、`model_revision` 非空；與輸入 child 逐筆對應（順序與 ID 一致、metadata 不變） |

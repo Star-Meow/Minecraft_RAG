@@ -175,17 +175,19 @@ def filter_version_urls(urls: list, version: str) -> list:
 
     - 版本比對用 path.startswith(f"/{version}/")：帶尾斜槓可避免 '1.21.1'
       命中 '1.21.10' 這類前綋誤判（不可用 '1.21.1' in url）。
-    - 排除入口頁：path == f"/{version}/index"（入口僅推導站台根與版本，不抓取）。
+    - 排除入口頁：去掉結尾斜線後等於 f"/{version}" 或 f"/{version}/index"
+      （站台網址可能帶結尾斜線，見 docs/07_troubleshooting.md T8；入口僅推導站台根，不抓取）。
+    - 保留 sitemap 給的原始網址作為抓取目標，不改寫。
     """
     prefix = f"/{version}/"
-    entry_path = f"/{version}/{ENTRY_PAGE_SLUG}"
+    entry_paths = {f"/{version}", f"/{version}/{ENTRY_PAGE_SLUG}"}
 
     kept = []
     for url in urls:
         path = urlparse(url).path
         if not path.startswith(prefix):
             continue
-        if path == entry_path:
+        if path.rstrip("/") in entry_paths:
             continue
         kept.append(url)
     return kept
@@ -273,6 +275,20 @@ def fetch_all(urls: list, session: requests.Session, log_file,
 
         # 成功：解析路徑三元素並寫檔
         elements = parse_path_elements(url, version)
+        if not elements["page_slug"]:
+            # 防護：page_slug 為空會產生 '.html' 這類錯誤檔名 → 記為失敗，不寫檔
+            error = "empty page_slug（無法由 URL 解析頁面名稱）"
+            log_file.write(f"[{index:>3}/{len(urls)}] FAIL {url} -> {error}\n")
+            entries.append({
+                "url": url,
+                "chapter": None,
+                "page_slug": None,
+                "local_path": None,
+                "http_status": status,
+                "fetched_at": ts,
+                "error": error,
+            })
+            continue
         out_path = raw_html_path(version, mod_slug, elements["chapter"], elements["page_slug"])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(body, encoding="utf-8")
@@ -311,7 +327,7 @@ def write_manifest(path: Path, sources: dict, mod_slug: str, entries: list) -> N
 # 編排
 # ---------------------------------------------------------------------------
 def main() -> int:
-    """[2] 主流程。回傳 exit code：0 成功；1 表設定或 sitemap 層級錯誤。"""
+    """[2] 主流程。回傳 exit code：0 全部成功；1 表設定或 sitemap 層級錯誤，或有頁面抓取失敗。"""
     sources = load_sources(SOURCES_PATH)
     version = sources["version"]
     mod_slug = slugify(sources["mod"])   # mod 原名 -> mod_slug，只用於路徑與命名
@@ -354,7 +370,8 @@ def main() -> int:
     for e in failed:
         print(f"  FAIL {e['url']} -> {e.get('error')}", file=sys.stderr)
 
-    return 0
+    # 有失敗頁 → exit 1（manifest 已寫出，供人工查驗後重跑；見 docs/01_fetch.md）
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
