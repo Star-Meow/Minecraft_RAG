@@ -65,12 +65,12 @@ flight data 保留為**交叉驗證用途**（本 ADR 即以它確認 sitemap �
 - **`sources.json` 不變**：`entry_url` 職責縮為「推導站台根」（版本由 `sources.json` 的 `version` 欄位給定，不由入口頁推導），仍是整條 URL 鏈的起點；`exclude`／`include` 欄位保留於 schema 但 [2] 目前不讀取（過濾發生在版本層）。
 - **`_manifest.json` 新增 `source: "sitemap"` 欄位**記錄發現來源，`urls[]` 每項含 `url`、`chapter`、`page_slug`、`local_path`、`http_status`。
 - **`BeautifulSoup` 仍保留於依賴**，但職責改為 [3] 的 leaf page 連結密度計算（navigation_only 判定），**不用於導覽發現**。trafilatura 自行解析 raw HTML（直接吃字串），BeautifulSoup 不是它的前置解析器。
-- **[3] 連結密度只算 `<article>`，不算整頁**（2026-09-27 實測，留檔原因：這是「整頁算密度」在 SSR 帶側邊欄站台上的系統性誤殺案例）。本站台每頁帶情境式展開側邊欄（最多 91 連結），對整頁 HTML 算密度時，短內容頁（物品／配方頁）被側邊欄拖高至 0.84–0.86 而遭誤殺（`certus_quartz_dust`／`quartz_glass`／`crank`，真內容頁）；限縮 `<article>` 後同批頁降為 0.00。閾值 0.5 依兩群分離選定：`-index` 頁 0.93／0.97 vs 非 index 121 頁最高 0.44，`0.44 < 0.5 < 0.93` 無重疊。完整規則表與 reason 字串見 `ARCHITECTURE.md` §4 [3]。
+- **[3] 連結密度只算 `<article>`，不算整頁**（2026-09-27 實測，留檔原因：這是「整頁算密度」在 SSR 帶側邊欄站台上的系統性誤殺案例）。本站台每頁帶情境式展開側邊欄（最多 91 連結），對整頁 HTML 算密度時，短內容頁（物品／配方頁）被側邊欄拖高至 0.84–0.86 而遭誤殺（`certus_quartz_dust`／`quartz_glass`／`crank`，真內容頁）；限縮 `<article>` 後同批頁降為 0.00。閾值 0.5 依兩群分離選定：`-index` 頁 0.93／0.97 vs 非 index 121 頁最高 0.44，`0.44 < 0.5 < 0.93` 無重疊。完整規則表與 reason 字串見 `ARCHITECTURE.md` §5 [3]。
 - **無新依賴**：`xml.etree.ElementTree` 為 Python 標準庫。
 - **`*-index` 章節索引頁**：sitemap 含此 3 頁，[2] 照抓，[3] 以 navigation_only 規則跳過（其 trafilatura 抽出為純標題拼接，無知識內容）。
 - **失效模式**：站方移除 sitemap 或改變 robots 宣告 → [2] fail-fast 並明確報錯，優於靜默漏資料。
 
 ## 7. 相關文件
 
-- `ARCHITECTURE.md` §4 [1]／[2]
+- `ARCHITECTURE.md` §5 [1]／[2]
 - `AGENTS.md` §6 Pipeline Contract、§8 Technical Constraints

@@ -7,7 +7,7 @@
 
 ## 1. 背景
 
-`ARCHITECTURE.md` 原把 [4] 噪音規則列為「不預先定義，待第一波資料後歸納」。[2]–[3] 跑通後，對 `data/processed/extracted/1.21.1/applied-energistics-2/` 全量 121 頁做唯讀盤點（證據見未入版控的 `docs/plans/[4]-gap-evidence.md`），歸納出本 ADR 的規則集。
+`ARCHITECTURE.md` 原把 [4] 噪音規則列為「不預先定義，待第一波資料後歸納」。[2]–[3] 跑通後，對 `data/processed/extracted/1.21.1/applied-energistics-2/` 全量 121 頁做唯讀盤點，歸納出本 ADR 的規則集。
 
 **前提——無圖片版本**：本站以圖片呈現配方（合成格、材料、結果）。trafilatura 只抽文字節點，圖片被拿掉後，配方區塊只剩「配方類型標籤」這層空殼（`Recipe`、`Crafting`、`Inscriber`…）。本 ADR 的規則專清這層空殼，**依本批資料校準**；網站加入新的圖片相關內容，或 [3] 改為抽取圖片屬性時，必須重新盤點。
 
@@ -95,7 +95,7 @@ AGENTS.md §10／§16 規定 [4] 噪音規則須由人工裁定。以下為 2026
 
 ## 8. 相關文件
 
-- `ARCHITECTURE.md` §4 [4]
+- `ARCHITECTURE.md` §5 [4]
 - `AGENTS.md` §6 Pipeline Contract、§9 Sensitive Operations、§13 Validation Matrix
 - `reports/cleaning_report.md`（每次執行的實際數字）
 - `docs/adr/ADR-001-sitemap-as-url-source.md`

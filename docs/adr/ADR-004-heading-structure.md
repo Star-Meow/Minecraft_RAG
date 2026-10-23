@@ -73,5 +73,5 @@
 ## 7. 相關文件
 
 - `docs/adr/ADR-002-[4]-noise-rules.md`
-- `ARCHITECTURE.md` §4 [3]／[4]／[5]
+- `ARCHITECTURE.md` §5 [3]／[4]／[5]
 - `AGENTS.md` §6、§7、§8、§13
