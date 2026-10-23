@@ -92,7 +92,8 @@
 │       4 R4b       切除單行頁尾端黏住的標籤                                    │
 │       5 R6        依相對深度調整層級：                                        │
 │                   直屬頁面的標題 → ##；頁內 H1 → ##、它底下的 H2 → ###          │
-│       6 守衛      body 為空 → 不輸出；不足 200 字元 → 輸出但在報告標示         │
+│       6 R7        刪除空章節（標題底下已無內容，ADR-006）                     │
+│       7 守衛      body 為空 → 不輸出；不足 200 字元 → 輸出但在報告標示         │
 │ 輸出  cleaned/1.21.1/applied-energistics-2/items-blocks-machines/            │
 │         terminals.md                                                         │
 │         ---                                                                  │
@@ -325,7 +326,8 @@ Minecraft_RAG/
   | 3 | R4a 整行標籤 | 整行 == 白名單標籤 → 刪（含 `## Recipe` 這類標題行） |
   | 4 | R4b 黏合尾端標籤 | 只作用於整頁單行的頁；行尾黏合的標籤序列 → 切除 |
   | 5 | R6 標題層級正規化 | 依相對深度輸出 `##`／`###`／`####`：一般頁 h2 → `##`；多 H1 頁的頁內 H1 → `##`、其下 H2 → `###`；每頁只保留 `# <title>` |
-  | 6 | 空 body 守衛 | 處理後 body 為空 → 不輸出；不足 200 字元 → 輸出並在報告標示 |
+  | 6 | R7 空章節移除 | 標題範圍內（到下一個同層或更高層標題為止）沒有任何內容 → 刪除該標題；由深到淺判定（ADR-006） |
+  | 7 | 空 body 守衛 | 處理後 body 為空 → 不輸出；不足 200 字元 → 輸出並在報告標示 |
 
   R2 門檻與字元統計以去掉標題記號的純文字計算。
 - **輸出格式**（`data/processed/cleaned/<version>/<mod_slug>/<chapter>/<page_slug>.md`）：
@@ -376,7 +378,7 @@ Minecraft_RAG/
   - 工具：`MarkdownHeaderTextSplitter` + `RecursiveCharacterTextSplitter`（langchain-text-splitters）；以 **BGE-M3 tokenizer** 計數，並斷言不超過上限。
   - child 與 parent 都必須帶完整 provenance（`source_url`、`title`、`mod`、`chapter`、`page`、`section`、版本），child 必須能對應到 parent。
   - slug 只用於路徑、ID 與 `mod`／`chapter`／`page`；`text`、`title`、`section` 禁止 slug 化。
-- **待定**：大小區間與 overlap（先量測 token 分布）、ID 格式（含跨 chapter 同名頁碰撞處理）、parent 產物的檔名與 schema。
+- **待定**：大小區間與 overlap（先量測 token 分布）、第一個 `##` 之前的開頭段落歸屬哪個 parent、ID 格式（含跨 chapter 同名頁碰撞處理）、parent 產物的檔名與 schema。
 
 ### [6] EMBED — 向量化（`src/embed_chunks.py`）
 
@@ -416,6 +418,7 @@ Minecraft_RAG/
 | `ADR-002` | [4] 噪音規則（無圖片版本）：R2 → R1 → R4a → R4b → 空 body 守衛；不回 [3] 重抽 |
 | `ADR-003` | Embedding 改用 BGE-M3（dense、1024 維、revision 鎖定），取代 MiniLM |
 | `ADR-004` | 保留頁內標題結構：[3] 產生 `markdown`、[4] 新增 R6 |
+| `ADR-006` | [4] 新增 R7：移除去噪後只剩標題的空章節 |
 | `ADR-005` | [5] 採子母分層切分（docstore 模式） |
 
 其他已定的架構原則（尚未寫成 ADR）：
@@ -430,6 +433,7 @@ Minecraft_RAG/
 | 事項 | 狀態 |
 | --- | --- |
 | [5] child／parent 大小區間、overlap | 待以 BGE-M3 tokenizer 量測 cleaned MD 後定案 |
+| [5] 開頭段落（第一個 `##` 之前）的 parent 歸屬 | 待 [5] 實作時定義（切分職責，不由上游處理） |
 | [5] ID 格式、parent 產物格式 | 待 [5] 實作時定義（含跨 chapter 同名頁碰撞） |
 | [5] frontmatter 是否會被 `MarkdownHeaderTextSplitter` 當成內容 | 待實作驗證 |
 | [6] embedding 輸入拼接格式 | 待 [6] 實作時定義 |

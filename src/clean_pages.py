@@ -17,6 +17,7 @@
   全為標籤詞才切除；切除後該行必須仍有內容
 - R6 標題層級正規化：頁內剩餘標題依相對深度輸出為 ##／###／####
   （整頁只保留 [4] 寫入的 # <title>；多 H1 頁的頁內 H1 → ##、其下 H2 → ###，見 ADR-004）
+- R7 空章節移除：沒有任何內容的標題（R4a 刪光標籤後的殘留）一併刪除（ADR-006）
 - 空 body 守衛：規則處理後 body 為空 → 不輸出；不足 200 字元 → 輸出但標示
 
 不處理：孤立 `-`、句子之間的黏合、相鄰表格、段落空行（僅計數與記錄）。
@@ -298,11 +299,44 @@ def normalize_heading_levels(lines: list) -> tuple:
     return new_lines, counts
 
 
+def drop_empty_sections(lines: list) -> tuple:
+    """R7：刪除沒有任何內容的標題（R4a 刪光標籤後留下的空章節，見 ADR-006）。
+
+    標題的範圍到下一個「同層或更高層」標題為止；範圍內只要有一行非空白的
+    非標題行，就不算空。由深到淺判定，所以只含空子章節的章節也一併刪除。
+    回傳 (新行清單, 已刪標題清單)。
+    """
+    removed = []
+    changed = True
+    while changed:
+        changed = False
+        for i, ln in enumerate(lines):
+            level, content = split_heading(ln)
+            if level == 0:
+                continue
+            has_content = False
+            j = i + 1
+            while j < len(lines):
+                sub_level = split_heading(lines[j])[0]
+                if sub_level and sub_level <= level:
+                    break
+                if sub_level == 0 and lines[j].strip():
+                    has_content = True
+                    break
+                j += 1
+            if not has_content:
+                removed.append(ln)
+                lines = lines[:i] + lines[i + 1:]
+                changed = True
+                break
+    return lines, removed
+
+
 # ---------------------------------------------------------------------------
 # [4.3] 單頁處理
 # ---------------------------------------------------------------------------
 def process_page(record: dict) -> tuple:
-    """對單頁施規則集（R2 → R1 → R4a → R4b → R6 → 空 body 守衛）。
+    """對單頁施規則集（R2 → R1 → R4a → R4b → R6 → R7 → 空 body 守衛）。
 
     輸入為 [3] 的 markdown 欄位（缺欄位 → ValueError，由呼叫端逐頁隔離）。
     回傳 (body 或 None（不輸出）, 判定紀錄 dict)。
@@ -330,6 +364,7 @@ def process_page(record: dict) -> tuple:
         "notes": [],
         "orphan_dashes": 0,
         "heading_counts": {},
+        "empty_sections": [],
         "chars_before": len(text),
         "chars_after": 0,
         "short_body": False,
@@ -379,6 +414,14 @@ def process_page(record: dict) -> tuple:
 
     # R6 標題層級正規化（頁面 H1 已由 R1 移除；整頁只保留寫檔時的 # <title>）
     lines, log["heading_counts"] = normalize_heading_levels(lines)
+
+    # R7 空章節移除（R4a 刪光內容後只剩標題的章節）
+    lines, log["empty_sections"] = drop_empty_sections(lines)
+    for ln in log["empty_sections"]:
+        level = split_heading(ln)[0]
+        log["heading_counts"][level] -= 1
+        if log["heading_counts"][level] == 0:
+            del log["heading_counts"][level]
 
     body = "\n".join(lines)
     log["chars_after"] = len("\n".join(content_of(ln) for ln in lines))
@@ -489,7 +532,7 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
 
     lines.append(f"# [4] 清理報告 — {sources['version']} / {sources['mod']}")
     lines.append("")
-    lines.append("- 規則依「無圖片版本」的抽取結果校準；定義與決策見 `docs/adr/ADR-002`、`ADR-004`（標題結構）")
+    lines.append("- 規則依「無圖片版本」的抽取結果校準；定義與決策見 `docs/adr/ADR-002`、`ADR-004`（標題結構）、`ADR-006`（空章節）")
     lines.append("- 前提：配方以圖片呈現，本批只清圖片被拿掉後留下的標籤空殼")
     lines.append("")
 
@@ -538,6 +581,10 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
     heading_pages = sum(1 for _, log, _ in outputs if log["heading_counts"])
     level_text = "、".join(f"{'#' * lv} {level_totals[lv]}" for lv in sorted(level_totals)) or "無"
     lines.append(f"- R6 標題層級正規化：{heading_pages} 頁含小標題；{level_text}")
+    r7 = [(rel, h) for rel, log, _ in pages for h in log["empty_sections"]]
+    lines.append(f"- R7 空章節移除：{len(r7)} 個")
+    for rel, h in r7:
+        lines.append(f"  - `{_md_cell(rel)}`：`{_md_cell(h)}`")
     lines.append("")
 
     # 3. 跳過頁清單（對帳用：輸出頁數 + 本表頁數 = 輸入頁數）
@@ -732,6 +779,7 @@ def _error_log(message: str, chars_before: int = 0) -> dict:
         "notes": [],
         "orphan_dashes": 0,
         "heading_counts": {},
+        "empty_sections": [],
         "chars_before": chars_before,
         "chars_after": 0,
         "short_body": False,
