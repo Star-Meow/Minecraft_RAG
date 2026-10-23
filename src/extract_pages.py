@@ -5,6 +5,8 @@
 markdown = text 加上標題記號：以 <article> 的 h1–h3 依序比對 text 中完全相同的行，
 加 '#' 前綴（層級照 HTML 原樣，不正規化、不判斷噪音；那是 [4] 的職責，見 docs/02_extract.md）。
 另產出人類可讀的 .md 衍生物（data/processed/extracted_readable/），供驗收閱讀；
+目錄擁有權：extracted/<version>/ 與 extracted_readable/<version>/ 由 [3] 擁有，全部頁處理完且
+至少一頁產出後，才清空並重建（不留下前次執行的舊檔；見 docs/02_extract.md）。
 真值仍以 JSON 為準，.md 寫入失敗只記 warning，不影響 exit code。
 
 設計原則：
@@ -19,6 +21,7 @@ markdown = text 加上標題記號：以 <article> 的 h1–h3 依序比對 text
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -314,6 +317,23 @@ def build_extracted_record(extracted: dict, markdown: str, recipes: list, http_s
     return record
 
 
+def rebuild_version_dir(root: Path, version: str) -> Path:
+    """清空並重建 <root>/<version>/（[3] 擁有 extracted 與 extracted_readable 的版本子樹）。
+
+    路徑斷言：root 只能是 EXTRACTED_DIR 或 READABLE_DIR；不動 root 底下的
+    _parse_report.json、_index.md、.gitkeep 與其他版本。斷言失敗即中止，不刪任何檔案。
+    """
+    if root not in (EXTRACTED_DIR, READABLE_DIR):
+        raise ValueError(f"重建根目錄不合法：{root}")
+    if not version or not version.isascii() or "/" in version or "\\" in version or version in (".", ".."):
+        raise ValueError(f"version 不合法：{version!r}")
+    target = root / version
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def write_json(path: Path, record: dict) -> None:
     """寫單一 extracted JSON（UTF-8，確保中文內容正確）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -534,6 +554,7 @@ def main() -> int:
     headings_matched = 0
     headings_unmatched = []  # 標題對應不到 text 的行（報告用，不影響 exit code）
     redirect_candidates = []  # 尚未確認的跳轉頁候選：只列清單供人工複核，不排除
+    pending = []              # (url, JSON 路徑, .md 路徑, record)：全部處理完才寫檔
     recipe_count = 0
     recipe_types = {}         # station → 配方數
     recipe_unparsed = []      # 無法解析的配方區塊（報告列出，供人工檢查）
@@ -594,24 +615,12 @@ def main() -> int:
 
         record = build_extracted_record(extracted, markdown, recipes, entry.get("http_status"))
         out_path = extracted_output_path(entry["local_path"])
-        write_json(out_path, record)
+        md_path = readable_output_path(entry["local_path"])
+        pending.append((url, out_path, md_path, record))   # 全部處理完才重建目錄並寫檔
         parsed_count += 1
         parsed_detail.append({"url": url, "source": record.get("source"),
                               "title": record.get("title")})
         print(f"  OK   {url} -> {out_path.relative_to(PROJECT_ROOT)}")
-
-        # 人類可讀 .md：JSON 成功後才寫；失敗只記 warning，不影響 exit code
-        md_path = readable_output_path(entry["local_path"])
-        try:
-            write_readable_md(md_path, record)
-            print(f"       -> {md_path.relative_to(PROJECT_ROOT)}")
-        except OSError as exc:
-            warnings.append({
-                "url": url,
-                "phase": "readable_md",
-                "error": f"{type(exc).__name__}: {exc}",
-            })
-            print(f"  WARN {url} -> .md 寫入失敗：{exc}", file=sys.stderr)
 
         # _index.md 資料列（chapter／page_slug 取自 manifest，非 .md 路徑）
         index_rows.append({
@@ -621,6 +630,30 @@ def main() -> int:
             "text_length": len(record.get("text") or ""),
             "source": record.get("source"),
         })
+
+    # 系統性失敗：沒有任何頁產出 → 不清空既有輸出
+    if parsed_count == 0:
+        print("[3] 中止：無任何頁產出，不刪除現有輸出", file=sys.stderr)
+        return 1
+
+    # 清空並重建 extracted/<version>/ 與 extracted_readable/<version>/，再寫入本次結果
+    version = manifest["version"]
+    rebuild_version_dir(EXTRACTED_DIR, version)
+    rebuild_version_dir(READABLE_DIR, version)
+    print(f"[3] 已重建 {(EXTRACTED_DIR / version).relative_to(PROJECT_ROOT)}、"
+          f"{(READABLE_DIR / version).relative_to(PROJECT_ROOT)}")
+    for url, out_path, md_path, record in pending:
+        write_json(out_path, record)
+        # 人類可讀 .md：JSON 寫入後才寫；失敗只記 warning，不影響 exit code
+        try:
+            write_readable_md(md_path, record)
+        except OSError as exc:
+            warnings.append({
+                "url": url,
+                "phase": "readable_md",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            print(f"  WARN {url} -> .md 寫入失敗：{exc}", file=sys.stderr)
 
     # _index.md：列全部已輸出頁。失敗只記 warning，不影響 exit code
     try:

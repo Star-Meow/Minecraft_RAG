@@ -59,6 +59,8 @@
   - `local_path` 是相對專案根目錄的 POSIX 路徑；失敗頁為 `null`。
 - `data/raw/_fetch_log.txt`：逐頁成敗的 debug log（覆寫，不入版控）。
 
+**目錄擁有權**：`data/raw/<version>/` 由本階段擁有。成功頁的 HTML 先留在記憶體；全部頁抓完且**至少一頁成功**後，才清空並重建該版本子樹，再寫入本次結果，所以不會留下前次執行的舊檔。路徑斷言限定 `data/raw/<version>`，不動 `raw/` 根目錄的 `_manifest.json`、`_fetch_log.txt`、`.gitkeep` 與其他版本。
+
 ## 2. 處理方法
 
 1. 由 `entry_url` 推導站台根，讀 `robots.txt` 的 `Sitemap:` 宣告；沒有宣告時依序試 `/sitemap.xml`、`/sitemap_index.xml`、`/sitemap-index.xml`。
@@ -79,7 +81,7 @@
    防護：解析出的 `page_slug` 為空時，該頁記為失敗（`local_path: null`、`error` 說明原因），不寫檔，結束碼為 1。
 7. 寫出 `_manifest.json`。
 
-**失敗處理**：不重試；記錄 `http_status` 與 `local_path: null`，仍寫出 manifest，結束碼為 1；人工查驗後重跑。
+**失敗處理**：不重試；記錄 `http_status` 與 `local_path: null`，仍寫出 manifest，結束碼為 1；人工查驗後重跑。沒有任何頁成功時，不清空既有 raw、不覆寫 manifest，結束碼為 1。
 
 ## 3. 為什麼這樣做
 

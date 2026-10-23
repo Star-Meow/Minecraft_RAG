@@ -62,6 +62,8 @@
 - `reports/extraction_report.md`：計數、跳過頁、**跳轉頁候選清單（待人工複核）**、配方總數與各類型數量、無法解析的配方清單、空 `source`／`title` 警示、標題對應數與未對應清單（覆寫，不入版控）。
 - `data/processed/extracted_readable/**/*.md` + `_index.md`：人類驗收用。路徑鏡像 JSON；內容為 front matter（`title`／`source`／`hostname`／`http_status`／`text_length`）+ `# {title}` + `text` 原文。真值以 JSON 為準；寫入失敗只記 warning；不入版控，可重產。
 
+**目錄擁有權**：`extracted/<version>/` 與 `extracted_readable/<version>/` 由本階段擁有。全部頁處理完且**至少一頁產出**後，才清空並重建這兩個版本子樹，再寫入本次結果，所以被跳過的頁（導覽頁、`exclude`）不會留下前次的舊檔。路徑斷言限定這兩個版本子樹，不動根目錄的 `_parse_report.json`、`_index.md`、`.gitkeep` 與其他版本。
+
 ## 2. 處理方法
 
 1. 從 manifest 取成功抓取的頁面（`local_path` 不為 null）。
@@ -91,7 +93,7 @@
    - **不正規化層級、不判斷噪音**：這兩件事由 [清理](03_clean.md) 負責。
 7. 寫出 JSON；JSON 成功後才寫 .md 衍生物；最後寫報告。
 
-**失敗處理**：trafilatura 回傳 None → 記入 errors，其他頁繼續；缺 `http_status` 或 `text` 為空 → 報告標記。
+**失敗處理**：trafilatura 回傳 None → 記入 errors，其他頁繼續；缺 `http_status` 或 `text` 為空 → 報告標記；沒有任何頁產出 → 中止、不清空既有輸出、exit 1。
 
 ## 3. 為什麼這樣做
 
@@ -156,5 +158,5 @@
 
 | 事項 | 狀態 |
 | --- | --- |
-| 新 HTML 下的抽取品質（黏行、黏在一起的物品名稱） | 待盤點（見 [T8](07_troubleshooting.md#t8-站台建置方式改變內容未更新)）；配方已結構化，黏在正文中的物品名稱可再評估是否清除 |
+| 新 HTML 下的抽取品質（黏行、黏在一起的物品名稱） | 待盤點（見 [T8](07_troubleshooting.md#t8-站台建置方式改變內容未更新)）；提示框模板接成的物品名稱行：與配方完全重複的 11 行已由清理 R5 刪除；`storage_cells`、`upgrade_cards`、`getting-started` 3 行含配方以外的名稱，保留 |
 | 配方的已知限制 | 輪流顯示的材料（`cycling`，共 78 格）只取第一個；產物數量（HTML 無此資訊）不輸出；擺放形狀不輸出；配方圖片留待未來直接使用 |
