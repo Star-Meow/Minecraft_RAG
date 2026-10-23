@@ -190,7 +190,7 @@ Minecraft_RAG/
 ├── reports/                      ← 各階段的單次報告（覆蓋）
 ├── docs/
 │   ├── adr/                      ← Architecture Decision Records
-│   └── plans/                    ← 過程文件（調查證據、計畫；非規範）
+│   └── plans/                    ← 過程文件（調查證據、計畫；非規範，不入版控）
 ├── ARCHITECTURE.md               ← 本文件
 ├── AGENTS.md                     ← AI Agent 工程契約
 └── README.md                     ← 人類使用說明與開發狀態

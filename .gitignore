@@ -26,3 +26,6 @@ REVIEW.md
 onetime-report.md
 project-limit-skill-summary.txt
 codex.ps1
+
+# 過程文件（調查證據、計畫；非規範，不入版控）
+docs/plans/

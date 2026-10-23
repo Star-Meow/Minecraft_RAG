@@ -95,7 +95,7 @@ Agent 必須區分以下資訊來源：
 | `data/` | pipeline 產物 |
 | `reports/` | 各階段的單次報告 |
 | `docs/adr/` | Architecture Decision Records |
-| `docs/plans/` | 過程文件（非規範） |
+| `docs/plans/` | 過程文件（非規範，不入版控、不作為依據） |
 | `pyproject.toml`／`requirements.txt` | 專案 metadata 與依賴 |
 | `.env.example` | 環境變數範本（實際 `.env` 由本地提供，不入版控） |
 
