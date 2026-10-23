@@ -122,12 +122,12 @@
 │         MarkdownHeaderTextSplitter → 依 ## 切成 parent（### 併入所屬的 ##）   │
 │                                      沒有 ## 的頁 → 整頁一個 parent           │
 │         RecursiveCharacterTextSplitter → 在 parent 內切出 child              │
-│         BGE-M3 tokenizer 計數，並檢查不超過上限                               │
+│         BGE-M3 tokenizer 計數（只算正文）：parent ≤ 1024、child ≤ 256（ADR-007）│
 │ 輸出  parent 文件與 child chunks，兩者都帶完整 provenance：                   │
 │         source_url、title、mod、chapter、page、版本、                         │
 │         section = 標題路徑，例如 "Crafting Terminal > The UI"                 │
 │       child 必須能對應回所屬的 parent                                         │
-│ 待定  大小區間與 overlap（先量 token 分布）、ID 格式、parent 的檔名與 schema   │
+│ 待定  overlap、超過上限時的切法、開頭段落歸屬、ID 格式、parent 產物格式       │
 └──────────────────────────────────────────────────────────────────────────────┘
                      │ child                           │ parent
                      ▼                                 │
@@ -361,7 +361,7 @@ Minecraft_RAG/
 
 ### [5] CHUNK — 子母分層切分（`src/chunk_pages.py`）
 
-> 框架已定（ADR-005）；參數、ID 與欄位格式待實作時定義，不預先虛構。
+> 框架已定（ADR-005）；大小上限已定（ADR-007）；其餘參數、ID 與欄位格式待實作時定義，不預先虛構。
 
 - **輸入**：只讀 `data/processed/cleaned/**/*.md`（不讀 extracted JSON 或 manifest）。
 - **metadata 來源**：
@@ -375,10 +375,11 @@ Minecraft_RAG/
 - **已定的處理方式**：
   - parent = 一個 `##` 章節（`###` 併入所屬的 `##`）；沒有 `##` 的頁，parent = 整頁；超過上限時再切。
   - child = 在 parent 內切出的片段，只有 child 進 embedding。
-  - 工具：`MarkdownHeaderTextSplitter` + `RecursiveCharacterTextSplitter`（langchain-text-splitters）；以 **BGE-M3 tokenizer** 計數，並斷言不超過上限。
+  - 工具：`MarkdownHeaderTextSplitter` + `RecursiveCharacterTextSplitter`（langchain-text-splitters）。
+  - **大小上限（ADR-007）**：parent ≤ 1024 tokens、child ≤ 256 tokens；以 BGE-M3 tokenizer（`add_special_tokens=False`）計算，**只算正文**（標題路徑存於 metadata，不計入、不另外預留）；超過即斷言失敗、exit 1。
   - child 與 parent 都必須帶完整 provenance（`source_url`、`title`、`mod`、`chapter`、`page`、`section`、版本），child 必須能對應到 parent。
   - slug 只用於路徑、ID 與 `mod`／`chapter`／`page`；`text`、`title`、`section` 禁止 slug 化。
-- **待定**：大小區間與 overlap（先量測 token 分布）、第一個 `##` 之前的開頭段落歸屬哪個 parent、ID 格式（含跨 chapter 同名頁碰撞處理）、parent 產物的檔名與 schema。
+- **待定**：child overlap 與 Recursive 切分點、parent 超過 1024 時的切法、第一個 `##` 之前的開頭段落歸屬哪個 parent、極短 parent 是否合併、ID 格式（含跨 chapter 同名頁碰撞處理）、parent 產物的檔名與 schema。
 
 ### [6] EMBED — 向量化（`src/embed_chunks.py`）
 
@@ -389,6 +390,7 @@ Minecraft_RAG/
   - `BAAI/bge-m3`，由 sentence-transformers 本機載入，只用 dense 向量，1024 維，`normalize_embeddings=True`。
   - **鎖定 revision**，並把 `model_name`、`model_revision` 寫入輸出。
   - 輸出逐筆對應輸入 child（順序與 ID 一致，metadata 不得變動），並帶 parent 參照。
+  - 檢查 embedding 輸入（header 前綴 + child + special tokens）≤ 8192 tokens。
 - **待定**：embedding 輸入的拼接格式（slug 前綴或原始 title／section 路徑）。
 
 ### [7] INDEX — 寫入 pgvector（`src/index_chunks.py`，擱置）
@@ -418,8 +420,9 @@ Minecraft_RAG/
 | `ADR-002` | [4] 噪音規則（無圖片版本）：R2 → R1 → R4a → R4b → 空 body 守衛；不回 [3] 重抽 |
 | `ADR-003` | Embedding 改用 BGE-M3（dense、1024 維、revision 鎖定），取代 MiniLM |
 | `ADR-004` | 保留頁內標題結構：[3] 產生 `markdown`、[4] 新增 R6 |
-| `ADR-006` | [4] 新增 R7：移除去噪後只剩標題的空章節 |
 | `ADR-005` | [5] 採子母分層切分（docstore 模式） |
+| `ADR-006` | [4] 新增 R7：移除去噪後只剩標題的空章節 |
+| `ADR-007` | [5] 大小上限：parent ≤ 1024、child ≤ 256（只算正文） |
 
 其他已定的架構原則（尚未寫成 ADR）：
 
@@ -432,7 +435,9 @@ Minecraft_RAG/
 
 | 事項 | 狀態 |
 | --- | --- |
-| [5] child／parent 大小區間、overlap | 待以 BGE-M3 tokenizer 量測 cleaned MD 後定案 |
+| [5] child overlap、Recursive 切分點 | 待 [5] 實作時定義（ADR-007 模擬使用 32 與 `"
+"`／`". "`／`" "`） |
+| [5] parent 超過 1024 時的切法、極短 parent 是否合併 | 待 [5] 實作時定義 |
 | [5] 開頭段落（第一個 `##` 之前）的 parent 歸屬 | 待 [5] 實作時定義（切分職責，不由上游處理） |
 | [5] ID 格式、parent 產物格式 | 待 [5] 實作時定義（含跨 chapter 同名頁碰撞） |
 | [5] frontmatter 是否會被 `MarkdownHeaderTextSplitter` 當成內容 | 待實作驗證 |
