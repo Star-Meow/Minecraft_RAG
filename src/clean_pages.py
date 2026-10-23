@@ -16,6 +16,7 @@
 - R4a 整行標籤：整行（去空白）完全等於標籤詞 → 刪該行
 - R4b 黏合尾端標籤：行尾黏合的標籤序列，自第一個 Recipe/Recipes 起到行尾
   全為標籤詞才切除；切除後該行必須仍有內容
+- R5 配方名稱行移除：整行只由本頁配方物品名稱黏成（提示框模板殘留，與 ## Recipes 重複）→ 刪除
 - R6 標題層級正規化：頁內剩餘標題依相對深度輸出為 ##／###／####
   （整頁只保留 [4] 寫入的 # <title>；多 H1 頁的頁內 H1 → ##、其下 H2 → ###，見 docs/03_clean.md）
 - R7 空章節移除：沒有任何內容的標題（R4a 刪光標籤後的殘留）一併刪除（docs/03_clean.md）
@@ -75,6 +76,7 @@ NEWLINE = "\n"
 HEADING_RE = re.compile(r"^(#{1,6}) (.*)$")
 MIN_SUB_LEVEL = 2                # R6：頁內標題最高只到 ##（# 保留給 <title>）
 RECIPES_HEADING = "## Recipes"   # R8：配方段落的標題（自成一個章節）
+MIN_NAME_TOKENS = 2              # R5：整行至少由幾個配方物品名稱組成才刪除
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +296,52 @@ def normalize_heading_levels(lines: list) -> tuple:
     return new_lines, counts
 
 
+def recipe_item_names(recipes: list) -> set:
+    """該頁配方中出現的所有物品名稱（材料、槽位、產物）。"""
+    names = set()
+    for r in recipes:
+        names.add(r["result"])
+        for i in r.get("ingredients") or []:
+            names.add(i["name"])
+        for _, name in r.get("slots") or []:
+            names.add(name)
+    return names
+
+
+def count_name_tokens(line: str, names: set) -> int:
+    """整行能否完全切成 names 中的名稱（名稱之間不允許其他字元）；可以則回傳名稱數，否則 0。"""
+    best = [None] * (len(line) + 1)
+    best[0] = 0
+    for i in range(len(line)):
+        if best[i] is None:
+            continue
+        for name in names:
+            end = i + len(name)
+            if line.startswith(name, i) and (best[end] is None or best[end] < best[i] + 1):
+                best[end] = best[i] + 1
+    return best[len(line)] or 0
+
+
+def drop_recipe_name_lines(lines: list, recipes: list) -> tuple:
+    """R5：刪除「整行只由本頁配方物品名稱黏成」的行（提示框模板殘留，與 ## Recipes 重複）。
+
+    條件：非標題行，去前後空白後能完全切成 ≥ 2 個本頁配方的物品名稱。
+    含任何其他文字或配方以外的名稱 → 保留。回傳 (新行清單, 已刪行清單)。
+    """
+    names = recipe_item_names(recipes)
+    if not names:
+        return lines, []
+    kept = []
+    removed = []
+    for ln in lines:
+        level, content = split_heading(ln)
+        if level == 0 and count_name_tokens(content.strip(), names) >= MIN_NAME_TOKENS:
+            removed.append(content.strip())
+        else:
+            kept.append(ln)
+    return kept, removed
+
+
 def render_recipe(recipe: dict) -> str:
     """R8：配方轉為一行文字，順序為「類型: 材料 → 產物」。
 
@@ -345,7 +393,7 @@ def drop_empty_sections(lines: list) -> tuple:
 # [4.3] 單頁處理
 # ---------------------------------------------------------------------------
 def process_page(record: dict) -> tuple:
-    """對單頁施規則集（R2 → R1 → R4a → R4b → R6 → R7 → R8 → 空 body 守衛）。
+    """對單頁施規則集（R2 → R1 → R4a → R4b → R5 → R6 → R7 → R8 → 空 body 守衛）。
 
     輸入為 [3] 的 markdown 欄位（缺欄位 → ValueError，由呼叫端逐頁隔離）。
     回傳 (body 或 None（不輸出）, 判定紀錄 dict)。
@@ -375,6 +423,7 @@ def process_page(record: dict) -> tuple:
         "heading_counts": {},
         "empty_sections": [],
         "recipes_added": 0,
+        "recipe_name_lines": [],
         "chars_before": len(text),
         "chars_after": 0,
         "short_body": False,
@@ -413,6 +462,9 @@ def process_page(record: dict) -> tuple:
     if "\n" not in text:
         lines, log["r4b_seqs"], r4b_notes = strip_glued_label_tail(lines)
         log["notes"].extend(r4b_notes)
+
+    # R5 配方名稱行移除（只刪與本頁 ## Recipes 完全重複的名稱行）
+    lines, log["recipe_name_lines"] = drop_recipe_name_lines(lines, record.get("recipes") or [])
 
     # R6 標題層級正規化（頁面 H1 已由 R1 移除；整頁只保留寫檔時的 # <title>）
     lines, log["heading_counts"] = normalize_heading_levels(lines)
@@ -593,6 +645,10 @@ def write_cleaning_report(path: Path, sources: dict, pages: list) -> None:
     lines.append(f"- R7 空章節移除：{len(r7)} 個")
     r8_pages = sum(1 for _, log, _ in outputs if log["recipes_added"])
     r8_total = sum(log["recipes_added"] for _, log, _ in outputs)
+    r5 = [(rel, ln) for rel, log, _ in pages for ln in log["recipe_name_lines"]]
+    lines.append(f"- R5 配方名稱行移除：{len(r5)} 行")
+    for rel, ln in r5:
+        lines.append(f"  - `{_md_cell(rel)}`：{len(ln)} 字元")
     lines.append(f"- R8 配方輸出：{r8_pages} 頁，{r8_total} 個配方")
     for rel, h in r7:
         lines.append(f"  - `{_md_cell(rel)}`：`{_md_cell(h)}`")
@@ -792,6 +848,7 @@ def _error_log(message: str, chars_before: int = 0) -> dict:
         "heading_counts": {},
         "empty_sections": [],
         "recipes_added": 0,
+        "recipe_name_lines": [],
         "chars_before": chars_before,
         "chars_after": 0,
         "short_body": False,
