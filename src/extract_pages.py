@@ -2,6 +2,8 @@
 
 職責：從 [2] 抓回的 raw HTML 抽出主文，輸出含 title/text/markdown/source/hostname/http_status
 的 JSON；navigation_only 頁（導覽索引頁）跳過不輸出。
+trafilatura 兩次抽取：整頁 HTML 取 metadata（title／source／hostname）；BS4 整理後的
+#page-content 取 text（BS4 只整理輸入，抽取仍由 trafilatura 負責；見 docs/02_extract.md）。
 markdown = text 加上標題記號：以 <article> 的 h1–h3 依序比對 text 中完全相同的行，
 加 '#' 前綴（層級照 HTML 原樣，不正規化、不判斷噪音；那是 [4] 的職責，見 docs/02_extract.md）。
 另產出人類可讀的 .md 衍生物（data/processed/extracted_readable/），供驗收閱讀；
@@ -28,6 +30,7 @@ from urllib.parse import urljoin, urlparse
 
 import trafilatura
 from bs4 import BeautifulSoup
+from trafilatura.settings import use_config
 
 # ---------------------------------------------------------------------------
 # 常數
@@ -60,6 +63,10 @@ EXTRACTED_FIELDS = ("title", "text", "source", "hostname")
 
 # 標題結構：只取 <article> 內 h1–h3（docs/02_extract.md）
 HEADING_TAGS = ("h1", "h2", "h3")
+
+# 正文抽取（第二次 trafilatura）的設定：短頁不要退回 baseline（baseline 會把區塊黏成一行）
+TEXT_CONFIG = use_config()
+TEXT_CONFIG["DEFAULT"]["MIN_EXTRACTED_SIZE"] = "1"
 
 # 跳轉頁候選：正文（去掉 h1 與唯一連結後）只剩這個字（結構判定，不看字數）
 REDIRECT_MARKER = "See"
@@ -99,10 +106,57 @@ def collected_html_files(manifest: dict) -> list:
 # ---------------------------------------------------------------------------
 # [3.2] trafilatura 抽取
 # ---------------------------------------------------------------------------
-def extract_page(html: str) -> dict:
-    """呼叫 trafilatura 抽取主文，回傳 dict 或 None（無法抽取）。
+def prepare_article_html(html: str) -> tuple:
+    """BS4 整理 trafilatura 的輸入（不產生文字，只刪除或換掉元素；見 docs/02_extract.md）。
 
-    參數固定（AGENTS.md §8）：output_format=json, with_metadata=True, include_tables=True
+    1. 只取 <article> 內的 #page-content
+    2. 3D 場景說明（data-scene-in-world-annotations → contentTemplateId → <template>）改成清單，放在場景位置
+    3. 刪除 <template>（提示框）、配方區塊（由 parse_recipes 處理）、<img>／<svg>
+    4. 提示框標籤與連結換成純文字（連結密時 trafilatura 會把區塊當導覽處理而黏行）
+    回傳 (整理後的 HTML, 場景說明數)；沒有 #page-content 時回傳 (None, 0)。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    content = soup.select_one("article #page-content")
+    if content is None:
+        return None, 0
+    templates = {t.get("id"): t for t in soup.find_all("template") if t.get("id")}
+    notes = 0
+    for scene in content.find_all(attrs={"data-scene-in-world-annotations": True}):
+        try:
+            annotations = json.loads(scene["data-scene-in-world-annotations"])
+        except ValueError:
+            annotations = []
+        note_list = soup.new_tag("ul")
+        for annotation in annotations:
+            template = templates.get(annotation.get("contentTemplateId"))
+            text = " ".join(template.get_text(" ").split()) if template is not None else ""
+            if text:
+                item = soup.new_tag("li")
+                item.string = text
+                note_list.append(item)
+                notes += 1
+        if note_list.contents:
+            scene.insert_before(note_list)
+    for tag in content.find_all("template"):
+        tag.decompose()
+    for tag in content.select("div.recipe-container"):
+        tag.decompose()
+    for tag in content.find_all(["img", "svg"]):
+        tag.decompose()
+    for tag in content.select("span.minecraft-tooltip"):
+        tag.unwrap()
+    for tag in content.find_all("a"):
+        tag.unwrap()
+    return "<html><body><article>" + str(content) + "</article></body></html>", notes
+
+
+def extract_page(html: str) -> tuple:
+    """trafilatura 兩次抽取，回傳 (dict 或 None, 是否使用整理後輸入, 場景說明數)。
+
+    - 第一次：整頁 HTML，取 title／source／hostname 等 metadata 與備援 text
+      （參數：output_format=json, with_metadata=True, include_tables=True）
+    - 第二次：prepare_article_html 整理後的 HTML，取 text（TEXT_CONFIG：MIN_EXTRACTED_SIZE=1，
+      避免短頁退回 baseline 而黏行）。沒有 #page-content 或抽不出時，沿用第一次的 text。
     """
     raw = trafilatura.extract(
         html,
@@ -111,8 +165,21 @@ def extract_page(html: str) -> dict:
         include_tables=True,
     )
     if raw is None:
-        return None
-    return json.loads(raw)
+        return None, False, 0
+    record = json.loads(raw)
+    prepared, notes = prepare_article_html(html)
+    if prepared is None:
+        return record, False, 0
+    body = trafilatura.extract(
+        prepared,
+        output_format="json",
+        include_tables=True,
+        config=TEXT_CONFIG,
+    )
+    if body is None or not json.loads(body).get("text"):
+        return record, False, 0
+    record["text"] = json.loads(body)["text"]
+    return record, True, notes
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +524,9 @@ def write_extraction_report(path: Path, manifest: dict, stats: dict) -> None:
     lines.append(f"- parsed（已輸出 extracted JSON）：{stats['parsed_count']}")
     lines.append(f"- skipped（navigation_only、sources.json exclude）：{len(stats['skipped'])}")
     lines.append(f"- errors：{len(stats['errors'])}")
+    lines.append(f"- 正文來源：BS4 整理後抽取 {stats['prepared_pages']} 頁；退回整頁抽取 {len(stats['fallback_urls'])} 頁；保留 3D 場景說明 {stats['scene_notes']} 條")
+    for u in stats["fallback_urls"]:
+        lines.append(f"  - 退回整頁抽取：{u}")
     lines.append(f"- 尚未確認的跳轉頁候選（只列清單，未排除）：{len(stats['redirect_candidates'])}")
     lines.append(f"- 標題對應（<article> h1–h3 → markdown）：matched {stats['headings_matched']}"
                  f"／unmatched {len(stats['headings_unmatched'])}")
@@ -555,6 +625,9 @@ def main() -> int:
     headings_unmatched = []  # 標題對應不到 text 的行（報告用，不影響 exit code）
     redirect_candidates = []  # 尚未確認的跳轉頁候選：只列清單供人工複核，不排除
     pending = []              # (url, JSON 路徑, .md 路徑, record)：全部處理完才寫檔
+    prepared_pages = 0        # 以 BS4 整理後輸入抽出 text 的頁數
+    fallback_urls = []        # 退回整頁抽取 text 的頁（沒有 #page-content 或整理後抽不出）
+    scene_notes = 0           # 保留的 3D 場景說明數
     recipe_count = 0
     recipe_types = {}         # station → 配方數
     recipe_unparsed = []      # 無法解析的配方區塊（報告列出，供人工檢查）
@@ -574,7 +647,7 @@ def main() -> int:
             continue
 
         # 抽取：trafilatura 無法抽出 -> 記錄錯誤，繼續其他頁（不中斷）
-        extracted = extract_page(html)
+        extracted, used_prepared, notes = extract_page(html)
         if extracted is None:
             errors.append({"url": url, "error": "trafilatura_extract_returned_none"})
             print(f"  ERR  {url} -> extract 回傳 None", file=sys.stderr)
@@ -586,6 +659,13 @@ def main() -> int:
             skipped.append({"url": url, "reason": reason})
             print(f"  SKIP {url} -> {reason}")
             continue
+
+        # 正文來源統計（只計入會輸出的頁）
+        if used_prepared:
+            prepared_pages += 1
+            scene_notes += notes
+        else:
+            fallback_urls.append(url)
 
         # 跳轉頁候選：只記錄，不跳過（人工複核後再決定是否排除）
         is_redirect, href, link_text = redirect_link(html)
@@ -676,6 +756,9 @@ def main() -> int:
         "headings_matched": headings_matched,
         "headings_unmatched": headings_unmatched,
         "redirect_candidates": redirect_candidates,
+        "prepared_pages": prepared_pages,
+        "fallback_urls": fallback_urls,
+        "scene_notes": scene_notes,
         "recipe_count": recipe_count,
         "recipe_types": recipe_types,
         "recipe_unparsed": recipe_unparsed,

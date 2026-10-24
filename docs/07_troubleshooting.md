@@ -14,6 +14,7 @@
 | `git add` 出現 `LF will be replaced by CRLF` 警告 | [T6](#t6-git-的-crlf-警告) |
 | `src/fetch_pages.py` 有失敗頁卻回傳 0 | [T7](#t7-抓取失敗時的結束碼與契約不符) |
 | 重新抓取後頁數、跳過頁數、清理結果大幅改變，或出現 `other/.html.md` | [T8](#t8-站台建置方式改變內容未更新) |
+| 抽取結果的段落與清單黏成一行，或混入提示框的物品名稱 | [T9](#t9-trafilatura-把段落與清單黏成一行) |
 
 ## T1 側邊欄爬取只抓到 39/124 頁
 
@@ -82,3 +83,18 @@
   - 124 頁的 `<article>` 文字比對：120 頁完全相同；其餘 4 頁只差站台產生的字串（`Unknown recipe type minecraft:blasting` → `Smelting`、`Unknown config value…` → `Error: no configuration values were exported` 等），以及 `items-blocks-machines-index` 改為伺服器端輸出物品清單。
   - 使用者人工檢視確認網站內容未更新。
 - **處置**：目前資料保留新抓取的版本（未還原）。程式的錯誤處理與清理規則是否重新校準，待決定（見 [01_fetch.md](01_fetch.md)、[02_extract.md](02_extract.md)、[03_clean.md](03_clean.md)）。
+- **更新（2026-10-24）**：已處理——抓取的入口頁排除與 `page_slug` 防護改為能處理結尾 `/`（[01_fetch.md](01_fetch.md)）；規則一改為去掉結尾 `/` 後比對；人工確認的跳轉頁以 `sources.json` 的 `exclude` 在抽取跳過；段落與清單黏行、提示框名稱雜訊由抽取改為 BS4 整理輸入解決（[T9](#t9-trafilatura-把段落與清單黏成一行)）。
+
+## T9 trafilatura 把段落與清單黏成一行
+
+- **日期**：2026-10-24
+- **現象**：靜態 HTML 下，21 頁的段落與清單黏成單行（例：`devices` 的清單變成 `ME InterfaceME Import Bus…`）；12 頁混入提示框的物品名稱。
+- **根因**：
+  1. 連結密集的區塊被 trafilatura 當成導覽處理，換行資訊丟失。
+  2. 正文短於 `MIN_EXTRACTED_SIZE`（250）時，trafilatura 退回 baseline 抽取，baseline 會把區塊黏成一行。
+  3. 提示框的 `<template>` 文字被接進正文。
+- **處置**：[抽取](02_extract.md) 改為 BS4 整理輸入（只取 `#page-content`、場景說明改清單、刪除模板／配方區塊／圖片、連結與提示框標籤換成純文字）後再 trafilatura 抽取，第二次抽取使用 `MIN_EXTRACTED_SIZE = 1`。
+- **證據**：
+  - 根因實驗：連結換成純文字後，`devices` 1 → 8 行、`quartz_tools` 1 → 13 行；短頁退回 baseline 而黏行。
+  - 結果：黏成單行的頁 21 → 0（剩 17 頁單行皆為 HTML 只有一段文字的頁）；清單項目 404 → 624（含 3D 場景說明 213 條，213/213 保留）；提示框雜訊 12 頁 → 0；內容涵蓋率 99.1%（少掉的字皆為配方標籤）；`title`／`source`／`hostname`／`http_status`、`recipes` 與整理前 119/119 相同。
+  - trafilatura markdown 模式在新 HTML 重測：單行 21、無 H1 22、多 H1 11、提示框雜訊 15，不可行（見 [02_extract.md](02_extract.md) 的否決的方案）。
