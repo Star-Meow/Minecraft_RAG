@@ -91,7 +91,7 @@ Agent 必須區分以下資訊來源：
 | `src/fetch_pages.py` | [2] 抓取 | 抓取 raw HTML（只做網路 I/O）；文件 `docs/01_fetch.md`（含 [1]） |
 | `src/extract_pages.py` | [3] 抽取 | 抽取主文與標題結構；文件 `docs/02_extract.md` |
 | `src/clean_pages.py` | [4] 清理 | 清理與標題層級正規化；文件 `docs/03_clean.md` |
-| `src/chunk_pages.py` | [5] 切分 | 子母分層切分（目標狀態）；文件 `docs/04_chunk.md` |
+| `src/chunk_pages.py` | [5] 切分 | 子母分層切分；文件 `docs/04_chunk.md` |
 | `src/embed_chunks.py` | [6] 向量化 | Embedding（目標狀態）；文件 `docs/05_embed.md` |
 | `src/index_chunks.py` | [7] 入庫 | 寫入 pgvector（擱置）；文件 `docs/06_index.md` |
 | `data/` | — | pipeline 產物 |
@@ -174,7 +174,7 @@ Pipeline invariants（跨階段不可破壞）：
 - remote repository creation（一律 private，只有使用者明確要求才可 public）
 - 修改知識來源（`sources.json`）
 - 寫入專案根目錄之外的路徑（含全域 `~/.codex/skills/`）。例外：Agent 工具本身的暫存與記憶目錄、套件與模型的快取目錄（例如 `~/.cache/huggingface`）；下載仍依 §10 先詢問。
-- 刪除既有資料產物或既有檔案。例外：各階段依模塊文件重建自己擁有的版本子樹——[2] `raw/<version>/`、[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）、[4] `cleaned/<version>/`；條件皆為範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空。其他階段如需比照，須另行授權。
+- 刪除既有資料產物或既有檔案。例外：各階段依模塊文件重建自己擁有的版本子樹——[2] `raw/<version>/`、[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）、[4] `cleaned/<version>/`、[5] `chunks/<version>/`（2026-10-29 授權）；條件皆為範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空。其他階段如需比照，須另行授權。
 
 例外：檢查 `.gitignore` 內容，以及用 `git status`／`git ls-files` 確認敏感檔案的版控狀態，不屬於禁止項。
 
@@ -195,7 +195,7 @@ Pipeline invariants（跨階段不可破壞）：
 - 修改資料來源（`sources.json`）。
 - 刪除或搬移既有檔案。
 - 修改 [4] 清理規則（見 `docs/03_clean.md`）：門檻、白名單的小幅調整須使用者同意並記錄裁定；新增或刪除規則、改變處理順序屬 §16 框架級決策。
-- 定義模塊文件標示為「待定」或「擱置」的項目（如 [5] overlap 與 ID、[7] schema）。
+- 定義模塊文件標示為「待定」或「擱置」的項目（如 [6] embedding 輸入格式、[7] schema）。
 - §9 全部 Sensitive Operations。
 - 讀取環境變數、系統診斷、硬體狀態等敏感系統資訊。
 
@@ -253,7 +253,7 @@ Agent 不得宣稱未執行的驗證為成功。
 | [2] Fetch | `python src/fetch_pages.py` | `_manifest.json` 存在且每頁記錄 `http_status`；結束碼 0（有失敗記錄時為 1，須如實回報） |
 | [3] Extract | `python src/extract_pages.py` | 每份 `extracted/*.json` 可解析，含 `title`／`source`／非空 `text`／`markdown`；`markdown` 去掉標題記號後逐行等於 `text`；黏成單行的頁為 0（或已確認為單段頁）、報告列出退回整頁抽取的頁與場景說明數；`extraction_report.md` 產出，標出 `source`（與 `title`）為空的頁、未對應的標題，並列出尚未確認的跳轉頁候選清單（只列不排除，待人工複核）；`exclude` 中的網址皆被跳過；`extracted_readable/*.md` 數 = `parsed_count`，`_index.md` 產出；報告列出配方總數與各類型數量，無法解析的配方須人工確認 |
 | [4] Clean | `python src/clean_pages.py` | `cleaned/*.md` 產出、非空，含 frontmatter（至少 `title`、`source_url`），frontmatter 與 `# <title>` 之間有空行；每頁恰好一個 `#`，沒有白名單標籤的標題行，沒有空章節（標題底下必有內容）；被契約排除的頁不產出檔案，以 `cleaning_report.md` 為憑；**對帳：輸出頁數 + 報告列出的跳過頁數 = 輸入頁數**；`## Recipes` 之前的每一行去掉標題記號後，是某個輸入行或其子字串（純刪除檢查；`## Recipes` 由 R8 產生，行數須等於 `recipes` 筆數）；連跑兩次輸出相同 |
-| [5] Chunk | `python src/chunk_pages.py` | 至少：每筆可解析且 provenance 欄位非空；每個 child 都能對應到 parent；parent ≤ 2048、child ≤ 256 tokens（BGE-M3 tokenizer，只算正文）斷言通過。欄位清單待 `docs/04_chunk.md` 定案後補入 |
+| [5] Chunk | `python src/chunk_pages.py` | 結束碼 0；對帳：有產出頁數 + 錯誤頁數 = cleaned 頁數；每筆可解析，欄位齊全（`docs/04_chunk.md` §1）且 provenance 欄位非空；每個 child 都能對應到 parent、ID 唯一；以 BGE-M3 tokenizer 重新計數 parent ≤ 2048、child ≤ 256（含標題行）；child 為所屬 parent 的子字串；各頁 parent 串接後涵蓋 cleaned 正文；連跑兩次輸出相同 |
 | [6] Embed | `python src/embed_chunks.py` | 每筆 1024 維、norm = 1、`model_revision` 非空；與輸入 child 逐筆對應（順序與 ID 一致、metadata 不變） |
 | [7] Index | 待 schema 定義後補入 | 待定 |
 | Documentation | 人工核對 | 文內事實（路徑、檔名、規則引用）與實際狀況一致；每個格式只在產出它的模塊文件定義一次；`ARCHITECTURE.md` 的模塊地圖與模塊文件一致 |
