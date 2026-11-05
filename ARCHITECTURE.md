@@ -40,7 +40,7 @@
 | 抽取 | `docs/02_extract.md` | `src/extract_pages.py` | raw HTML、`_manifest.json`、`sources.json`（`exclude`） | `data/processed/extracted/`（另有 `extracted_readable/`） |
 | 清理 | `docs/03_clean.md` | `src/clean_pages.py` | extracted JSON | `data/processed/cleaned/` |
 | 切分 | `docs/04_chunk.md` | `src/chunk_pages.py` | cleaned MD | `data/processed/chunks/` |
-| 向量化 | `docs/05_embed.md` | `src/embed_chunks.py`（尚未實作） | child chunks | `data/processed/embeddings/` |
+| 向量化 | `docs/05_embed.md` | `src/embed_chunks.py` | child chunks | `data/processed/embeddings/` |
 | 入庫 | `docs/06_index.md` | `src/index_chunks.py`（擱置） | child 向量、parent 文件 | PostgreSQL + pgvector |
 
 其他：各模塊的單次報告放在 `reports/`（不入版控）；評估資料預留在 `data/evaluation/`（範圍外）；疑難排解見 `docs/07_troubleshooting.md`。
