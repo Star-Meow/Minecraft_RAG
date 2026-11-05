@@ -174,7 +174,7 @@ Pipeline invariants（跨階段不可破壞）：
 - remote repository creation（一律 private，只有使用者明確要求才可 public）
 - 修改知識來源（`sources.json`）
 - 寫入專案根目錄之外的路徑（含全域 `~/.codex/skills/`）。例外：Agent 工具本身的暫存與記憶目錄、套件與模型的快取目錄（例如 `~/.cache/huggingface`）；下載仍依 §10 先詢問。
-- 刪除既有資料產物或既有檔案。例外：各階段依模塊文件重建自己擁有的版本子樹——[2] `raw/<version>/`、[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）、[4] `cleaned/<version>/`、[5] `chunks/<version>/`（2026-10-29 授權）；條件皆為範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空。其他階段如需比照，須另行授權。
+- 刪除既有資料產物或既有檔案。例外：各階段依模塊文件重建自己擁有的版本子樹——[2] `raw/<version>/`、[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）、[4] `cleaned/<version>/`、[5] `chunks/<version>/`（2026-10-29 授權）、[6] `embeddings/<version>/`（2026-11-05 授權）；條件皆為範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空。其他階段如需比照，須另行授權。
 
 例外：檢查 `.gitignore` 內容，以及用 `git status`／`git ls-files` 確認敏感檔案的版控狀態，不屬於禁止項。
 

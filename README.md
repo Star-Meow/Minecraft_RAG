@@ -101,7 +101,7 @@ python src/chunk_pages.py
 | `src/extract_pages.py` | 抽取 | `data/processed/extracted/`、`reports/extraction_report.md` |
 | `src/clean_pages.py` | 清理 | `data/processed/cleaned/`、`reports/cleaning_report.md` |
 | `src/chunk_pages.py` | 切分 | `data/processed/chunks/`、`reports/chunking_report.md` |
-| `src/embed_chunks.py` | 向量化（尚未實作） | `data/processed/embeddings/` |
+| `src/embed_chunks.py` | 向量化 | `data/processed/embeddings/` |
 
 - 抓取失敗的頁面不會重試，會記錄在 `_manifest.json`；人工查驗後重新執行即可。
 - 切分首次執行時會從 Hugging Face 下載 BGE-M3 的 tokenizer 檔（不含模型權重）。
@@ -122,7 +122,7 @@ LLM 的 API key 一律透過 `.env` 讀取（範本見 `.env.example`），不�
 | 抽取 | 已實作：119 頁輸出（5 頁跳過：3 個導覽頁、2 個已確認的跳轉頁）；含標題結構與配方 |
 | 清理 | 已實作：119 頁輸出（0 頁跳過）；69 頁帶章節標題、85 頁附配方 |
 | 切分 | 已實作：119 頁 → parent 387 個、child 466 個（parent ≤ 2048、child ≤ 256） |
-| 向量化 | 待實作：模型已定（BGE-M3，1024 維） |
+| 向量化 | 已完成：466 筆 child 向量（BGE-M3，1024 維，2026-11-05 驗收） |
 | 入庫 | 擱置：schema 待前面各模塊跑通後定義 |
 
 ## 安全須知
