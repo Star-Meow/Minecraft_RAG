@@ -77,6 +77,6 @@
 ## 6. 跨模塊共通事項
 
 - **路徑慣例**：資料產物一律依 `<version>/<mod_slug>/<chapter>/<page_slug>` 分層；只有一段 URL 的頁歸 `chapter = other`。檔名以 `_` 開頭的是控制檔（manifest、報告），不是資料頁。
-- **更新行為**：所有中間產物都是單次記錄、整份覆寫；各模塊可獨立重跑（冪等）。`sources.json` 人工維護；各模塊擁有自己的版本子樹（`raw/<version>/`、`extracted/<version>/`、`extracted_readable/<version>/`、`cleaned/<version>/`），全部處理完且有產出後才清空重建，不留下前次執行的舊檔。
+- **更新行為**：所有中間產物都是單次記錄、整份覆寫；各模塊可獨立重跑（冪等）。`sources.json` 人工維護；各模塊擁有自己的版本子樹（`raw/<version>/`、`extracted/<version>/`、`extracted_readable/<version>/`、`cleaned/<version>/`、`chunks/<version>/`），全部處理完且有產出後才清空重建，不留下前次執行的舊檔。
 - **不入版控的產物**：`data/` 下的資料產物、`extracted_readable/`、`_fetch_log.txt`、`reports/` 下各模塊產生的報告。
 - **模型版本**：模型與 tokenizer 鎖定 revision 並記錄於輸出。
