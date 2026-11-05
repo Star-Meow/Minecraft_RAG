@@ -75,7 +75,7 @@ pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
-沒有 GPU 時，直接執行 `pip install -r requirements.txt` 即可。
+沒有 GPU 時，直接執行 `pip install -r requirements.txt` 即可（可跑 [2]–[5] 與 [6] 的 `--dry-run`；[6] 實際向量化需要 GPU）。
 
 ### 執行 pipeline
 
@@ -105,7 +105,7 @@ python src/chunk_pages.py
 
 - 抓取失敗的頁面不會重試，會記錄在 `_manifest.json`；人工查驗後重新執行即可。
 - 切分首次執行時會從 Hugging Face 下載 BGE-M3 的 tokenizer 檔（不含模型權重）。
-- 向量化使用的 BGE-M3 模型約 2.3 GB，首次執行時才會從 Hugging Face 下載，建議使用 GPU。
+- 向量化使用的 BGE-M3 模型約 2.3 GB，首次執行時才會從 Hugging Face 下載；向量化需要 NVIDIA GPU。
 - 入庫目前擱置。
 
 ### 金鑰

@@ -44,7 +44,8 @@ MODEL_NAME = "BAAI/bge-m3"
 MODEL_REVISION = "5617a9f61b028005a4858fdac845db406aefb181"   # 與 [5] chunk_pages.py 的 TOKENIZER_REVISION 相同
 EMBEDDING_DIM = 1024
 MAX_INPUT_TOKENS = 8192          # 含 special tokens
-BATCH_SIZE = 16                  # 實作細節：child ≤ 256 tokens，16 對一般 GPU／CPU 都保守
+BATCH_SIZE = 16                  # 實作細節：child ≤ 256 tokens，16 對一般 GPU 都保守
+DEVICE = "cuda"                  # 2026-11-05 人工裁定：非 dry-run 必須使用 CUDA，不退回 CPU
 NORM_TOLERANCE = 1e-4
 
 NEWLINE = "\n"
@@ -124,11 +125,22 @@ def find_over_limit(children: list, counts: list) -> list:
 # ---------------------------------------------------------------------------
 # [6.3] 向量計算（只在非 dry-run 時呼叫；此時才建立模型、載入權重）
 # ---------------------------------------------------------------------------
+def require_cuda() -> str:
+    """確認 CUDA 可用並回傳裝置資訊字串；不可用即 RuntimeError（呼叫端須在載入模型、寫檔、刪檔之前呼叫）。"""
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA 不可用：[6] 向量化必須使用 NVIDIA GPU（CUDA），不退回 CPU。"
+            f"請確認有 NVIDIA GPU 與驅動，且 torch 為 cu130 build（目前 torch {torch.__version__}）")
+    return f"{torch.cuda.get_device_name(0)}（torch {torch.__version__}）"
+
+
 def encode_inputs(inputs: list) -> list:
-    """以 sentence-transformers 計算 dense 向量（normalize_embeddings=True）。"""
+    """以 sentence-transformers 在 CUDA 上計算 dense 向量（normalize_embeddings=True）。"""
     from sentence_transformers import SentenceTransformer
 
-    model = SentenceTransformer(MODEL_NAME, revision=MODEL_REVISION)
+    model = SentenceTransformer(MODEL_NAME, revision=MODEL_REVISION, device=DEVICE)
     vectors = model.encode(inputs, batch_size=BATCH_SIZE, normalize_embeddings=True,
                            convert_to_numpy=True, show_progress_bar=False)
     return [[float(x) for x in row] for row in vectors]
@@ -197,7 +209,7 @@ def token_summary(counts: list) -> dict:
             "median": statistics.median(counts)}
 
 
-def write_embedding_report(path: Path, version: str, n_input: int, summary: dict) -> None:
+def write_embedding_report(path: Path, version: str, n_input: int, summary: dict, device_info: str) -> None:
     """寫 reports/embedding_report.md（單次報告，整份覆寫）。"""
     lines = [
         "# 向量化報告（[6] embed_chunks.py）",
@@ -207,6 +219,7 @@ def write_embedding_report(path: Path, version: str, n_input: int, summary: dict
         f"- version：`{version}`",
         f"- 模型：`{MODEL_NAME}` @ `{MODEL_REVISION}`（dense、{EMBEDDING_DIM} 維、normalize_embeddings=True）",
         '- embedding 輸入：`f"{section}\\n\\n{text}"`',
+        f"- 裝置：`{DEVICE}`，{device_info}",
         f"- 批次大小：{BATCH_SIZE}",
         "",
         "## 2. 對帳",
@@ -235,6 +248,15 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="只組輸入字串、做 tokenizer 斷言與對帳；不載入模型、不寫檔")
     args = parser.parse_args()
+
+    device_info = ""
+    if not args.dry_run:
+        try:
+            device_info = require_cuda()
+        except RuntimeError as exc:
+            print(f"[6] 中止：{exc}", file=sys.stderr)
+            return 1
+        print(f"[6] 裝置：{DEVICE}，{device_info}")
 
     sources = load_sources(SOURCES_PATH)
     version = sources["version"]
@@ -277,7 +299,7 @@ def main() -> int:
     version_dir = assert_rebuild_target(version)
     rebuild_dir(version_dir)
     write_jsonl(version_dir / OUTPUT_NAME, records)
-    write_embedding_report(REPORT_PATH, version, len(children), summary)
+    write_embedding_report(REPORT_PATH, version, len(children), summary, device_info)
     print(f"[6] 已寫入 {(version_dir / OUTPUT_NAME).relative_to(PROJECT_ROOT)}（{len(records)} 筆）")
     print(f"     報告：{REPORT_PATH.relative_to(PROJECT_ROOT)}")
     return 0
