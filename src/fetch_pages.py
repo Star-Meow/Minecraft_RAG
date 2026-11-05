@@ -1,17 +1,20 @@
 """[2] 抓取 raw HTML。
 
 職責：只做網路 I/O 與路徑三元素解析；不做 HTML->MD 轉換，也不解析導覽 DOM。
-URL 真值來源：sitemap.xml（robust 探測，見 docs/adr/ADR-001-sitemap-as-url-source.md）。
+URL 真值來源：sitemap.xml（robust 探測，見 docs/01_fetch.md）。
 
 設計原則：
 - 模組化：每個函式單一職責，main() 只做編排。
 - 低語法糖：不使用 walrus、dataclass、裝飾器；顯式迴圈與條件。
 - 失敗語意：sitemap 不可用 -> fail-fast；單頁失敗 -> 記錄不中斷。
+- 目錄擁有權：raw/<version>/ 由 [2] 擁有；全部頁抓完且至少一頁成功後，
+  才清空並重建（不留下前次執行的舊檔；見 docs/01_fetch.md）。
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -175,17 +178,19 @@ def filter_version_urls(urls: list, version: str) -> list:
 
     - 版本比對用 path.startswith(f"/{version}/")：帶尾斜槓可避免 '1.21.1'
       命中 '1.21.10' 這類前綋誤判（不可用 '1.21.1' in url）。
-    - 排除入口頁：path == f"/{version}/index"（入口僅推導站台根與版本，不抓取）。
+    - 排除入口頁：去掉結尾斜線後等於 f"/{version}" 或 f"/{version}/index"
+      （站台網址可能帶結尾斜線，見 docs/07_troubleshooting.md T8；入口僅推導站台根，不抓取）。
+    - 保留 sitemap 給的原始網址作為抓取目標，不改寫。
     """
     prefix = f"/{version}/"
-    entry_path = f"/{version}/{ENTRY_PAGE_SLUG}"
+    entry_paths = {f"/{version}", f"/{version}/{ENTRY_PAGE_SLUG}"}
 
     kept = []
     for url in urls:
         path = urlparse(url).path
         if not path.startswith(prefix):
             continue
-        if path == entry_path:
+        if path.rstrip("/") in entry_paths:
             continue
         kept.append(url)
     return kept
@@ -197,7 +202,7 @@ def filter_version_urls(urls: list, version: str) -> list:
 def parse_path_elements(url: str, version: str) -> dict:
     """解析 chapter 與 page_slug；mod_slug 另由 sources.json 的 mod 產生。
 
-    規則（ARCHITECTURE.md §4 [2]）：
+    規則（docs/01_fetch.md）：
     - 去掉 /{version}/ 前綴後，1 段 -> chapter='other'，page_slug=該段
     - >=2 段 -> chapter=倒數第二段，page_slug=最後一段
     - URL 本身已是 slug，不另行 slug 化（只用在路徑與命名）
@@ -244,12 +249,14 @@ def fetch_page(url: str, session: requests.Session) -> tuple:
 
 
 def fetch_all(urls: list, session: requests.Session, log_file,
-              version: str, mod_slug: str) -> list:
-    """逐頁抓取，每頁間隔 FETCH_INTERVAL_SECONDS；回傳 manifest entries。
+              version: str, mod_slug: str) -> tuple:
+    """逐頁抓取，每頁間隔 FETCH_INTERVAL_SECONDS；回傳 (manifest entries, 待寫入的 [(路徑, HTML)])。
 
+    本函式不寫檔：成功頁的 HTML 先留在記憶體，由 main() 重建目錄後統一寫入。
     version / mod_slug 明確以參數傳入，不使用模組級全域狀態（保持可獨立測試）。
     """
     entries = []
+    pending = []
     for index, url in enumerate(urls, start=1):
         # 間隔放在抓取「之前」：首頁不等待，其餘每頁等待 0.5 秒
         if index > 1:
@@ -273,9 +280,22 @@ def fetch_all(urls: list, session: requests.Session, log_file,
 
         # 成功：解析路徑三元素並寫檔
         elements = parse_path_elements(url, version)
+        if not elements["page_slug"]:
+            # 防護：page_slug 為空會產生 '.html' 這類錯誤檔名 → 記為失敗，不寫檔
+            error = "empty page_slug（無法由 URL 解析頁面名稱）"
+            log_file.write(f"[{index:>3}/{len(urls)}] FAIL {url} -> {error}\n")
+            entries.append({
+                "url": url,
+                "chapter": None,
+                "page_slug": None,
+                "local_path": None,
+                "http_status": status,
+                "fetched_at": ts,
+                "error": error,
+            })
+            continue
         out_path = raw_html_path(version, mod_slug, elements["chapter"], elements["page_slug"])
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(body, encoding="utf-8")
+        pending.append((out_path, body))   # 先留在記憶體；全部抓完後才重建目錄並寫檔
 
         log_file.write(f"[{index:>3}/{len(urls)}] OK   {url} -> {out_path.relative_to(PROJECT_ROOT)}\n")
         entries.append({
@@ -286,7 +306,24 @@ def fetch_all(urls: list, session: requests.Session, log_file,
             "http_status": status,
             "fetched_at": ts,
         })
-    return entries
+    return entries, pending
+
+
+def rebuild_version_dir(version: str) -> Path:
+    """清空並重建 raw/<version>/（[2] 擁有）。
+
+    路徑斷言：只允許 data/raw/<version>，不動 raw 根目錄的 _manifest.json、
+    _fetch_log.txt、.gitkeep 與其他版本。斷言失敗即中止，不刪任何檔案。
+    """
+    if not version or not version.isascii() or "/" in version or "\\" in version or version in (".", ".."):
+        raise ValueError(f"version 不合法：{version!r}")
+    target = RAW_DIR / version
+    if target.parent != RAW_DIR:
+        raise ValueError(f"重建目標不在 {RAW_DIR} 之下：{target}")
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +335,7 @@ def write_manifest(path: Path, sources: dict, mod_slug: str, entries: list) -> N
         "version": sources["version"],
         "mod": sources["mod"],        # 原名，與 mod_slug 並存以便追溯
         "mod_slug": mod_slug,
-        "source": "sitemap",          # URL 發現來源（ADR-001）
+        "source": "sitemap",          # URL 發現來源（docs/01_fetch.md）
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "urls": entries,
     }
@@ -311,7 +348,7 @@ def write_manifest(path: Path, sources: dict, mod_slug: str, entries: list) -> N
 # 編排
 # ---------------------------------------------------------------------------
 def main() -> int:
-    """[2] 主流程。回傳 exit code：0 成功；1 表設定或 sitemap 層級錯誤。"""
+    """[2] 主流程。回傳 exit code：0 全部成功；1 表設定或 sitemap 層級錯誤，或有頁面抓取失敗。"""
     sources = load_sources(SOURCES_PATH)
     version = sources["version"]
     mod_slug = slugify(sources["mod"])   # mod 原名 -> mod_slug，只用於路徑與命名
@@ -343,18 +380,31 @@ def main() -> int:
     with open(RAW_DIR / "_fetch_log.txt", "w", encoding="utf-8") as log_file:
         log_file.write(f"# fetch log @ {datetime.now(timezone.utc).isoformat()}\n")
         log_file.write(f"# sitemap: {sitemap_url}\n")
-        entries = fetch_all(target_urls, session, log_file, version, mod_slug)
-
-    # manifest（覆寫）
-    write_manifest(RAW_DIR / "_manifest.json", sources, mod_slug, entries)
+        entries, pending = fetch_all(target_urls, session, log_file, version, mod_slug)
 
     ok = sum(1 for e in entries if e["local_path"] is not None)
     failed = [e for e in entries if e["local_path"] is None]
+
+    # 系統性失敗：沒有任何頁成功 → 不清空既有 raw、不覆寫 manifest
+    if ok == 0:
+        print("抓到 0 頁成功：不清空既有 raw，也不覆寫 manifest", file=sys.stderr)
+        return 1
+
+    # 清空並重建 raw/<version>/，再寫入本次抓到的頁（不留下前次的舊檔）
+    version_dir = rebuild_version_dir(version)
+    for out_path, body in pending:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(body, encoding="utf-8")
+    print(f"rebuilt      : {version_dir.relative_to(PROJECT_ROOT)}（{len(pending)} 頁）")
+
+    # manifest（覆寫）
+    write_manifest(RAW_DIR / "_manifest.json", sources, mod_slug, entries)
     print(f"fetched      : {ok} ok / {len(failed)} failed")
     for e in failed:
         print(f"  FAIL {e['url']} -> {e.get('error')}", file=sys.stderr)
 
-    return 0
+    # 有失敗頁 → exit 1（manifest 已寫出，供人工查驗後重跑；見 docs/01_fetch.md）
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

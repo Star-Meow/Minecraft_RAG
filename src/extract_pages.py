@@ -1,8 +1,14 @@
 """[3] 抽取主文（trafilatura）。
 
-職責：從 [2] 抓回的 raw HTML 抽出主文，輸出含 title/text/source/hostname/http_status
+職責：從 [2] 抓回的 raw HTML 抽出主文，輸出含 title/text/markdown/source/hostname/http_status
 的 JSON；navigation_only 頁（導覽索引頁）跳過不輸出。
+trafilatura 兩次抽取：整頁 HTML 取 metadata（title／source／hostname）；BS4 整理後的
+#page-content 取 text（BS4 只整理輸入，抽取仍由 trafilatura 負責；見 docs/02_extract.md）。
+markdown = text 加上標題記號：以 <article> 的 h1–h3 依序比對 text 中完全相同的行，
+加 '#' 前綴（層級照 HTML 原樣，不正規化、不判斷噪音；那是 [4] 的職責，見 docs/02_extract.md）。
 另產出人類可讀的 .md 衍生物（data/processed/extracted_readable/），供驗收閱讀；
+目錄擁有權：extracted/<version>/ 與 extracted_readable/<version>/ 由 [3] 擁有，全部頁處理完且
+至少一頁產出後，才清空並重建（不留下前次執行的舊檔；見 docs/02_extract.md）。
 真值仍以 JSON 為準，.md 寫入失敗只記 warning，不影響 exit code。
 
 設計原則：
@@ -17,12 +23,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import trafilatura
 from bs4 import BeautifulSoup
+from trafilatura.settings import use_config
 
 # ---------------------------------------------------------------------------
 # 常數
@@ -33,6 +41,7 @@ EXTRACTED_DIR = PROJECT_ROOT / "data" / "processed" / "extracted"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
 MANIFEST_PATH = RAW_DIR / "_manifest.json"
+SOURCES_PATH = PROJECT_ROOT / "sources.json"   # 共用設定：exclude 為人工確認要排除的網址
 PARSE_REPORT_PATH = EXTRACTED_DIR / "_parse_report.json"
 EXTRACTION_REPORT_PATH = REPORTS_DIR / "extraction_report.md"
 
@@ -49,8 +58,18 @@ READABLE_INDEX_PATH = READABLE_DIR / "_index.md"
 NAV_MIN_TEXT_LENGTH = 200     # 抽出文字少於此字元數 → 疑似導覽頁
 NAV_MAX_LINK_DENSITY = 0.5    # <article> 內連結密度高於此 → 疑似導覽頁
 
-# extracted JSON 欄位：只保留 trafilatura 原始輸出 + http_status（AGENTS.md §7）
+# extracted JSON 欄位：trafilatura 原始輸出 + markdown（標題記號）+ http_status（AGENTS.md §7）
 EXTRACTED_FIELDS = ("title", "text", "source", "hostname")
+
+# 標題結構：只取 <article> 內 h1–h3（docs/02_extract.md）
+HEADING_TAGS = ("h1", "h2", "h3")
+
+# 正文抽取（第二次 trafilatura）的設定：短頁不要退回 baseline（baseline 會把區塊黏成一行）
+TEXT_CONFIG = use_config()
+TEXT_CONFIG["DEFAULT"]["MIN_EXTRACTED_SIZE"] = "1"
+
+# 跳轉頁候選：正文（去掉 h1 與唯一連結後）只剩這個字（結構判定，不看字數）
+REDIRECT_MARKER = "See"
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +81,15 @@ def load_manifest(path: Path) -> dict:
         raise FileNotFoundError(f"找不到 {path}：請先執行 [2] src/fetch_pages.py")
     with path.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_excluded_urls(path: Path) -> set:
+    """讀 sources.json 的 exclude（人工確認要排除的網址），回傳去掉結尾斜線的集合。"""
+    if not path.exists():
+        raise FileNotFoundError(f"找不到 {path}：[1] sources.json 不存在")
+    with path.open(encoding="utf-8") as f:
+        sources = json.load(f)
+    return {url.rstrip("/") for url in sources.get("exclude", [])}
 
 
 def collected_html_files(manifest: dict) -> list:
@@ -78,10 +106,57 @@ def collected_html_files(manifest: dict) -> list:
 # ---------------------------------------------------------------------------
 # [3.2] trafilatura 抽取
 # ---------------------------------------------------------------------------
-def extract_page(html: str) -> dict:
-    """呼叫 trafilatura 抽取主文，回傳 dict 或 None（無法抽取）。
+def prepare_article_html(html: str) -> tuple:
+    """BS4 整理 trafilatura 的輸入（不產生文字，只刪除或換掉元素；見 docs/02_extract.md）。
 
-    參數固定（AGENTS.md §8）：output_format=json, with_metadata=True, include_tables=True
+    1. 只取 <article> 內的 #page-content
+    2. 3D 場景說明（data-scene-in-world-annotations → contentTemplateId → <template>）改成清單，放在場景位置
+    3. 刪除 <template>（提示框）、配方區塊（由 parse_recipes 處理）、<img>／<svg>
+    4. 提示框標籤與連結換成純文字（連結密時 trafilatura 會把區塊當導覽處理而黏行）
+    回傳 (整理後的 HTML, 場景說明數)；沒有 #page-content 時回傳 (None, 0)。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    content = soup.select_one("article #page-content")
+    if content is None:
+        return None, 0
+    templates = {t.get("id"): t for t in soup.find_all("template") if t.get("id")}
+    notes = 0
+    for scene in content.find_all(attrs={"data-scene-in-world-annotations": True}):
+        try:
+            annotations = json.loads(scene["data-scene-in-world-annotations"])
+        except ValueError:
+            annotations = []
+        note_list = soup.new_tag("ul")
+        for annotation in annotations:
+            template = templates.get(annotation.get("contentTemplateId"))
+            text = " ".join(template.get_text(" ").split()) if template is not None else ""
+            if text:
+                item = soup.new_tag("li")
+                item.string = text
+                note_list.append(item)
+                notes += 1
+        if note_list.contents:
+            scene.insert_before(note_list)
+    for tag in content.find_all("template"):
+        tag.decompose()
+    for tag in content.select("div.recipe-container"):
+        tag.decompose()
+    for tag in content.find_all(["img", "svg"]):
+        tag.decompose()
+    for tag in content.select("span.minecraft-tooltip"):
+        tag.unwrap()
+    for tag in content.find_all("a"):
+        tag.unwrap()
+    return "<html><body><article>" + str(content) + "</article></body></html>", notes
+
+
+def extract_page(html: str) -> tuple:
+    """trafilatura 兩次抽取，回傳 (dict 或 None, 是否使用整理後輸入, 場景說明數)。
+
+    - 第一次：整頁 HTML，取 title／source／hostname 等 metadata 與備援 text
+      （參數：output_format=json, with_metadata=True, include_tables=True）
+    - 第二次：prepare_article_html 整理後的 HTML，取 text（TEXT_CONFIG：MIN_EXTRACTED_SIZE=1，
+      避免短頁退回 baseline 而黏行）。沒有 #page-content 或抽不出時，沿用第一次的 text。
     """
     raw = trafilatura.extract(
         html,
@@ -90,16 +165,29 @@ def extract_page(html: str) -> dict:
         include_tables=True,
     )
     if raw is None:
-        return None
-    return json.loads(raw)
+        return None, False, 0
+    record = json.loads(raw)
+    prepared, notes = prepare_article_html(html)
+    if prepared is None:
+        return record, False, 0
+    body = trafilatura.extract(
+        prepared,
+        output_format="json",
+        include_tables=True,
+        config=TEXT_CONFIG,
+    )
+    if body is None or not json.loads(body).get("text"):
+        return record, False, 0
+    record["text"] = json.loads(body)["text"]
+    return record, True, notes
 
 
 # ---------------------------------------------------------------------------
 # [3.3] navigation_only 判定
 # ---------------------------------------------------------------------------
 def is_index_page(url: str) -> bool:
-    """規則一：URL path 以 '-index' 結尾（如 .../ae2-mechanics/ae2-mechanics-index）。"""
-    path = urlparse(url).path
+    """規則一：URL path（去掉結尾斜線後）以 '-index' 結尾（如 .../ae2-mechanics/ae2-mechanics-index/）。"""
+    path = urlparse(url).path.rstrip("/")
     return path.endswith("-index")
 
 
@@ -111,7 +199,7 @@ def link_density(html: str) -> float:
     被誤判為導覽頁。<article> 才是真正的主文區，側邊欄與頁首導覽都在它之外。
 
     BeautifulSoup 在此只用於 leaf page 內容的連結密度計算，不用於導覽發現
-    （見 ADR-001 與 AGENTS.md §8）。
+    （見 docs/02_extract.md 與 AGENTS.md §8）。
     """
     soup = BeautifulSoup(html, "html.parser")
     article = soup.find("article")
@@ -128,6 +216,132 @@ def link_density(html: str) -> float:
         link_text += anchor.get_text(separator="", strip=True)
 
     return len(link_text) / len(total_text)
+
+
+def article_headings(html: str) -> list:
+    """回傳 <article> 內 h1–h3 的 (level, text)，依文件順序。無 <article> → 空清單。
+
+    BeautifulSoup 在此用於讀取標題結構（docs/02_extract.md），不用於導覽發現。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.find("article")
+    if article is None:
+        return []
+    headings = []
+    for tag in article.find_all(list(HEADING_TAGS)):
+        text = tag.get_text(" ", strip=True)
+        if text:
+            headings.append((int(tag.name[1]), text))
+    return headings
+
+
+def build_markdown(text: str, headings: list) -> tuple:
+    """把 headings 依序對應到 text 中完全相同（去前後空白）的行，加 '#' 前綴。
+
+    游標只往下找；找不到的標題不移動游標、記入 unmatched。
+    回傳 (markdown, matched 數, unmatched 清單[(level, text)])。
+    """
+    lines = text.split("\n")
+    cursor = 0
+    matched = 0
+    unmatched = []
+    for level, heading in headings:
+        found = -1
+        for i in range(cursor, len(lines)):
+            if lines[i].strip() == heading:
+                found = i
+                break
+        if found < 0:
+            unmatched.append((level, heading))
+            continue
+        lines[found] = "#" * level + " " + heading
+        cursor = found + 1
+        matched += 1
+    return "\n".join(lines), matched, unmatched
+
+
+def _item_name(element) -> str:
+    """取元素內第一個帶 aria-description 的圖示名稱（物品名稱）；沒有則回傳空字串。"""
+    if element is None:
+        return ""
+    img = element.find("img", attrs={"aria-description": True})
+    return img.get("aria-description") if img is not None else ""
+
+
+def parse_recipes(html: str) -> tuple:
+    """解析 <article> 內的配方區塊（div.recipeBoxLayout），回傳 (配方清單, 無法解析的清單)。
+
+    配方：{"label": 頁面上的類型文字, "station": 類型圖示名稱, "shapeless": bool,
+           "ingredients": [{"name", "count"}] 或 None, "slots": [[槽位, 名稱]] 或 None,
+           "result": 產物名稱}
+    - 一般配方：類型 → 材料格 → 箭頭 → 產物；材料依出現順序計數（重複次數即數量），空格與火焰略過。
+    - Inscriber：材料以槽位（top／middle／bottom）記錄，產物在 result 槽。
+    - Smithing：材料依序為 template／base／addition。
+    - 輪流顯示的材料（cycling）只取第一個；產物數量與擺放形狀不保留（見 docs/02_extract.md）。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.find("article")
+    recipes = []
+    failures = []
+    if article is None:
+        return recipes, failures
+    for box in article.select("div.recipeBoxLayout"):
+        parts = box.find_all(recursive=False)
+        label = parts[0].get_text(" ", strip=True) if parts else ""
+        station = _item_name(parts[0]) if parts else ""
+        recipe = {"label": label, "station": station, "shapeless": "Shapeless" in label,
+                  "ingredients": None, "slots": None, "result": ""}
+        if station == "Inscriber" and len(parts) >= 2:
+            slots = []
+            for cell in parts[1].find_all(recursive=False):
+                slot = (cell.get("class") or [""])[0].replace("ae2-inscriber-", "")
+                name = _item_name(cell)
+                if slot == "result":
+                    recipe["result"] = name
+                elif name:
+                    slots.append([slot, name])
+            recipe["slots"] = slots
+        elif len(parts) >= 4:
+            cells = parts[1].select(".ingredient-box") or [parts[1]]
+            names = [_item_name(cell) for cell in cells]
+            names = [n for n in names if n]
+            if station == "Smithing Table" and len(names) == 3:
+                recipe["slots"] = [["template", names[0]], ["base", names[1]], ["addition", names[2]]]
+            else:
+                counts = {}
+                for n in names:
+                    counts[n] = counts.get(n, 0) + 1
+                recipe["ingredients"] = [{"name": n, "count": c} for n, c in counts.items()]
+            recipe["result"] = _item_name(parts[-1])
+        has_inputs = bool(recipe["ingredients"] or recipe["slots"])
+        if not (label and station and recipe["result"] and has_inputs):
+            failures.append({"label": label, "station": station, "result": recipe["result"]})
+            continue
+        recipes.append(recipe)
+    return recipes, failures
+
+
+def redirect_link(html: str) -> tuple:
+    """跳轉頁候選判定（結構判定，不看字數；見 docs/02_extract.md）。
+
+    <article> 去掉 h1 後，剛好一個 <a>，且扣掉連結文字後只剩 "See" → 候選。
+    回傳 (是否候選, 連結 href, 連結文字)。本函式只判定，是否排除由人工複核後決定。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.find("article")
+    if article is None:
+        return False, "", ""
+    for h1 in article.find_all("h1"):
+        h1.decompose()
+    links = article.find_all("a")
+    if len(links) != 1:
+        return False, "", ""
+    link_text = links[0].get_text(" ", strip=True)
+    rest = " ".join(article.get_text(" ").split())
+    rest = " ".join(rest.replace(link_text, "", 1).split())
+    if rest != REDIRECT_MARKER:
+        return False, "", ""
+    return True, links[0].get("href") or "", link_text
 
 
 def is_navigation_only(url: str, extracted: dict, html: str) -> tuple:
@@ -152,19 +366,39 @@ def extracted_output_path(local_path: str) -> Path:
     路徑結構沿用 [2] 寫入的 <version>/<mod_slug>/<chapter>/<page_slug> 分層；
     chapter/page_slug 不重新計算，完全由 [2] 的路徑決定（權威來源分離）。
     """
-    rel = local_path[len("data/raw/"):]               # 去掉 data/raw/ 前綴
-    rel_json = rel[:-len(".html")] + ".json"          # .html -> .json
-    return EXTRACTED_DIR / rel_json
+    rel = (PROJECT_ROOT / local_path).relative_to(RAW_DIR)    # 去掉 data/raw/ 前綴
+    return EXTRACTED_DIR / rel.with_suffix(".json")
 
 
-def build_extracted_record(extracted: dict, http_status) -> dict:
-    """組 extracted JSON：只放 trafilatura 原始欄位 + http_status。
+def build_extracted_record(extracted: dict, markdown: str, recipes: list, http_status) -> dict:
+    """組 extracted JSON：trafilatura 原始欄位 + markdown + recipes + http_status。
 
+    text 保留 trafilatura 原值不異動；markdown 為 text 加標題記號的版本；
+    recipes 為配方區塊的結構化結果（見 parse_recipes）。
     不加 page_slug/chapter（[5] 從路徑讀）；hostname 保留 trafilatura 原值不修正。
     """
     record = {field: extracted.get(field) for field in EXTRACTED_FIELDS}
+    record["markdown"] = markdown
+    record["recipes"] = recipes
     record["http_status"] = http_status
     return record
+
+
+def rebuild_version_dir(root: Path, version: str) -> Path:
+    """清空並重建 <root>/<version>/（[3] 擁有 extracted 與 extracted_readable 的版本子樹）。
+
+    路徑斷言：root 只能是 EXTRACTED_DIR 或 READABLE_DIR；不動 root 底下的
+    _parse_report.json、_index.md、.gitkeep 與其他版本。斷言失敗即中止，不刪任何檔案。
+    """
+    if root not in (EXTRACTED_DIR, READABLE_DIR):
+        raise ValueError(f"重建根目錄不合法：{root}")
+    if not version or not version.isascii() or "/" in version or "\\" in version or version in (".", ".."):
+        raise ValueError(f"version 不合法：{version!r}")
+    target = root / version
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 def write_json(path: Path, record: dict) -> None:
@@ -201,9 +435,8 @@ def readable_output_path(local_path: str) -> Path:
 
     與 extracted JSON 完全同構（路徑鏡像，僅頂層目錄與副檔名不同）。
     """
-    rel = local_path[len("data/raw/"):]               # 去掉 data/raw/ 前綴
-    rel_md = rel[:-len(".html")] + ".md"              # .html -> .md
-    return READABLE_DIR / rel_md
+    rel = (PROJECT_ROOT / local_path).relative_to(RAW_DIR)    # 去掉 data/raw/ 前綴
+    return READABLE_DIR / rel.with_suffix(".md")
 
 
 def build_readable_md(record: dict) -> str:
@@ -289,12 +522,55 @@ def write_extraction_report(path: Path, manifest: dict, stats: dict) -> None:
     lines.append(f"- URL 真值來源：{manifest.get('source', 'sitemap')}（sitemap.xml）")
     lines.append(f"- 處理頁數（成功抓取）：{stats['total']}")
     lines.append(f"- parsed（已輸出 extracted JSON）：{stats['parsed_count']}")
-    lines.append(f"- skipped（navigation_only）：{len(stats['skipped'])}")
+    lines.append(f"- skipped（navigation_only、sources.json exclude）：{len(stats['skipped'])}")
     lines.append(f"- errors：{len(stats['errors'])}")
+    lines.append(f"- 正文來源：BS4 整理後抽取 {stats['prepared_pages']} 頁；退回整頁抽取 {len(stats['fallback_urls'])} 頁；保留 3D 場景說明 {stats['scene_notes']} 條")
+    for u in stats["fallback_urls"]:
+        lines.append(f"  - 退回整頁抽取：{u}")
+    lines.append(f"- 尚未確認的跳轉頁候選（只列清單，未排除）：{len(stats['redirect_candidates'])}")
+    lines.append(f"- 標題對應（<article> h1–h3 → markdown）：matched {stats['headings_matched']}"
+                 f"／unmatched {len(stats['headings_unmatched'])}")
     lines.append("")
 
+    if stats["redirect_candidates"]:
+        lines.append("## 尚未確認的跳轉頁候選（待人工複核；未排除）")
+        lines.append("")
+        lines.append("判定：`<article>` 去掉 h1 後只有一個連結，且其餘文字只有 `See`。")
+        lines.append("請確認每一列確實是跳轉頁、指向的正式頁面存在；確認後把網址加入 sources.json 的 exclude 即會跳過。")
+        lines.append("")
+        lines.append("| URL | title | 指向 | 指向頁已在輸出中 |")
+        lines.append("| --- | --- | --- | --- |")
+        for c in stats["redirect_candidates"]:
+            title = (c["title"] or "").replace("|", "\\|")
+            in_kb = "是" if c["target"].rstrip("/") in stats["parsed_urls"] else "**否**"
+            lines.append(f"| {c['url']} | {title} | {c['target']} | {in_kb} |")
+        lines.append("")
+
+    lines.append("## 配方（recipes 欄位）")
+    lines.append("")
+    lines.append(f"- 配方總數：{stats['recipe_count']}；無法解析：{len(stats['recipe_unparsed'])}")
+    for station, n in sorted(stats["recipe_types"].items(), key=lambda x: (-x[1], x[0])):
+        lines.append(f"  - {station}：{n}")
+    if stats["recipe_unparsed"]:
+        lines.append("")
+        lines.append("| URL | label | station | result |")
+        lines.append("| --- | --- | --- | --- |")
+        for u in stats["recipe_unparsed"]:
+            lines.append(f"| {u['url']} | {u['label']} | {u['station']} | {u['result']} |")
+    lines.append("")
+
+    if stats["headings_unmatched"]:
+        lines.append("## 未對應標題（text 中找不到完全相同的行，markdown 不加記號）")
+        lines.append("")
+        lines.append("| URL | level | heading |")
+        lines.append("| --- | --- | --- |")
+        for u in stats["headings_unmatched"]:
+            heading = u["heading"].replace("|", "\\|")
+            lines.append(f"| {u['url']} | h{u['level']} | {heading} |")
+        lines.append("")
+
     if stats["skipped"]:
-        lines.append("## Skipped（navigation_only）")
+        lines.append("## Skipped（navigation_only 與 sources.json exclude）")
         lines.append("")
         lines.append("| URL | reason |")
         lines.append("| --- | --- |")
@@ -345,14 +621,33 @@ def main() -> int:
     index_rows = []        # _index.md 的資料列（只列成功輸出 JSON 的頁）
     parsed_detail = []
     parsed_count = 0
+    headings_matched = 0
+    headings_unmatched = []  # 標題對應不到 text 的行（報告用，不影響 exit code）
+    redirect_candidates = []  # 尚未確認的跳轉頁候選：只列清單供人工複核，不排除
+    pending = []              # (url, JSON 路徑, .md 路徑, record)：全部處理完才寫檔
+    prepared_pages = 0        # 以 BS4 整理後輸入抽出 text 的頁數
+    fallback_urls = []        # 退回整頁抽取 text 的頁（沒有 #page-content 或整理後抽不出）
+    scene_notes = 0           # 保留的 3D 場景說明數
+    recipe_count = 0
+    recipe_types = {}         # station → 配方數
+    recipe_unparsed = []      # 無法解析的配方區塊（報告列出，供人工檢查）
+    excluded_urls = load_excluded_urls(SOURCES_PATH)
 
     for entry in html_entries:
         url = entry["url"]
         html_path = PROJECT_ROOT / entry["local_path"]
         html = html_path.read_text(encoding="utf-8")
 
+        # sources.json 的 exclude：人工確認要排除的網址 → 跳過，不輸出
+        if url.rstrip("/") in excluded_urls:
+            is_redirect, _, _ = redirect_link(html)
+            reason = "redirect_page" if is_redirect else "excluded_by_sources"
+            skipped.append({"url": url, "reason": reason})
+            print(f"  SKIP {url} -> {reason}")
+            continue
+
         # 抽取：trafilatura 無法抽出 -> 記錄錯誤，繼續其他頁（不中斷）
-        extracted = extract_page(html)
+        extracted, used_prepared, notes = extract_page(html)
         if extracted is None:
             errors.append({"url": url, "error": "trafilatura_extract_returned_none"})
             print(f"  ERR  {url} -> extract 回傳 None", file=sys.stderr)
@@ -365,26 +660,47 @@ def main() -> int:
             print(f"  SKIP {url} -> {reason}")
             continue
 
-        record = build_extracted_record(extracted, entry.get("http_status"))
+        # 正文來源統計（只計入會輸出的頁）
+        if used_prepared:
+            prepared_pages += 1
+            scene_notes += notes
+        else:
+            fallback_urls.append(url)
+
+        # 跳轉頁候選：只記錄，不跳過（人工複核後再決定是否排除）
+        is_redirect, href, link_text = redirect_link(html)
+        if is_redirect:
+            redirect_candidates.append({
+                "url": url,
+                "title": extracted.get("title"),
+                "target": urljoin(url, href),
+                "link_text": link_text,
+            })
+            print(f"  NOTE {url} -> 跳轉頁候選（指向 {urljoin(url, href)}）")
+
+        # 標題結構：<article> h1–h3 依序對應 text 的行，產生 markdown
+        markdown, matched, unmatched = build_markdown(extracted.get("text") or "",
+                                                      article_headings(html))
+        headings_matched += matched
+        for level, heading in unmatched:
+            headings_unmatched.append({"url": url, "level": level, "heading": heading})
+
+        # 配方區塊：結構化為類型、材料、產物（不處理圖片本身）
+        recipes, recipe_failures = parse_recipes(html)
+        recipe_count += len(recipes)
+        for r in recipes:
+            recipe_types[r["station"]] = recipe_types.get(r["station"], 0) + 1
+        for f in recipe_failures:
+            recipe_unparsed.append({"url": url, **f})
+
+        record = build_extracted_record(extracted, markdown, recipes, entry.get("http_status"))
         out_path = extracted_output_path(entry["local_path"])
-        write_json(out_path, record)
+        md_path = readable_output_path(entry["local_path"])
+        pending.append((url, out_path, md_path, record))   # 全部處理完才重建目錄並寫檔
         parsed_count += 1
         parsed_detail.append({"url": url, "source": record.get("source"),
                               "title": record.get("title")})
         print(f"  OK   {url} -> {out_path.relative_to(PROJECT_ROOT)}")
-
-        # 人類可讀 .md：JSON 成功後才寫；失敗只記 warning，不影響 exit code
-        md_path = readable_output_path(entry["local_path"])
-        try:
-            write_readable_md(md_path, record)
-            print(f"       -> {md_path.relative_to(PROJECT_ROOT)}")
-        except OSError as exc:
-            warnings.append({
-                "url": url,
-                "phase": "readable_md",
-                "error": f"{type(exc).__name__}: {exc}",
-            })
-            print(f"  WARN {url} -> .md 寫入失敗：{exc}", file=sys.stderr)
 
         # _index.md 資料列（chapter／page_slug 取自 manifest，非 .md 路徑）
         index_rows.append({
@@ -394,6 +710,30 @@ def main() -> int:
             "text_length": len(record.get("text") or ""),
             "source": record.get("source"),
         })
+
+    # 系統性失敗：沒有任何頁產出 → 不清空既有輸出
+    if parsed_count == 0:
+        print("[3] 中止：無任何頁產出，不刪除現有輸出", file=sys.stderr)
+        return 1
+
+    # 清空並重建 extracted/<version>/ 與 extracted_readable/<version>/，再寫入本次結果
+    version = manifest["version"]
+    rebuild_version_dir(EXTRACTED_DIR, version)
+    rebuild_version_dir(READABLE_DIR, version)
+    print(f"[3] 已重建 {(EXTRACTED_DIR / version).relative_to(PROJECT_ROOT)}、"
+          f"{(READABLE_DIR / version).relative_to(PROJECT_ROOT)}")
+    for url, out_path, md_path, record in pending:
+        write_json(out_path, record)
+        # 人類可讀 .md：JSON 寫入後才寫；失敗只記 warning，不影響 exit code
+        try:
+            write_readable_md(md_path, record)
+        except OSError as exc:
+            warnings.append({
+                "url": url,
+                "phase": "readable_md",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            print(f"  WARN {url} -> .md 寫入失敗：{exc}", file=sys.stderr)
 
     # _index.md：列全部已輸出頁。失敗只記 warning，不影響 exit code
     try:
@@ -413,6 +753,16 @@ def main() -> int:
         "warnings": warnings,
         "errors": errors,
         "parsed_detail": parsed_detail,
+        "headings_matched": headings_matched,
+        "headings_unmatched": headings_unmatched,
+        "redirect_candidates": redirect_candidates,
+        "prepared_pages": prepared_pages,
+        "fallback_urls": fallback_urls,
+        "scene_notes": scene_notes,
+        "recipe_count": recipe_count,
+        "recipe_types": recipe_types,
+        "recipe_unparsed": recipe_unparsed,
+        "parsed_urls": {d["url"].rstrip("/") for d in parsed_detail},
     }
     write_parse_report(PARSE_REPORT_PATH, parsed_count, skipped, errors, warnings)
     write_extraction_report(EXTRACTION_REPORT_PATH, manifest, stats)

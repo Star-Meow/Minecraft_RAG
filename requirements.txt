@@ -1,6 +1,9 @@
-requests>=2.34.2
-beautifulsoup4>=4.15.0
-python-slugify>=9.1.1
-trafilatura>=2.2.0
-langchain-text-splitters>=1.1.2
-sentence-transformers>=6.1.0
+# Single source of dependencies; direct dependencies pinned for reproducible deploys.
+# torch is not listed: install the cu130 GPU build first on GPU machines (see README).
+requests==2.34.2
+beautifulsoup4==4.15.0
+python-slugify==9.1.1
+trafilatura==2.2.0
+langchain-text-splitters==1.1.2
+sentence-transformers==6.1.0
+transformers==5.17.0

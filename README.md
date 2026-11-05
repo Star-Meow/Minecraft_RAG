@@ -1,117 +1,47 @@
 # Minecraft AE2 RAG Assistant
 
-針對 Minecraft 1.21.1 與 Applied Energistics 2（AE2）的知識問答 RAG 助手：只依據 AE2 官方 1.21.1 指南回答問題，每個答案附可點擊的來源連結；官方文件不足以回答時，明確回覆「無法確認」，不猜測、不補完。
+針對 Minecraft 1.21.1 與 Applied Energistics 2（AE2）的知識問答 RAG 助手：只依據 AE2 官方 1.21.1 指南回答，每個答案附可點擊的來源連結；官方文件不足以回答時，明確回覆「目前官方文件不足以確認」，不猜測、不補完。
 
-本專案同時是**學習成熟 RAG 技術棧**的練習：pipeline 各階段採用業界常見工具（trafilatura、langchain-text-splitters、sentence-transformers、pgvector），而非只求最短交付路徑。
+本專案同時是**學習成熟 RAG 技術棧**的練習：各階段採用業界常見的工具與做法（trafilatura、langchain-text-splitters、子母分層切分、BGE-M3、pgvector）。
 
-## 三條核心原則
+## 核心原則
 
-1. **來源限定**——只使用 `guide.appliedenergistics.org` 的 1.21.1 官方頁面，不混用其他版本或非官方資料。
-2. **答案附來源**——每個回答標註出自哪個頁面與章節。
-3. **不足則明說**——檢索不到依據時承認無法確認。
+1. **來源限定**：只使用 `guide.appliedenergistics.org` 的 1.21.1 官方頁面。
+2. **答案附來源**：每個回答標註出自哪個頁面與章節。
+3. **不足則明說**：檢索不到依據時，回答「目前官方文件不足以確認」。
 
-## 整體架構
+## 文件導覽
 
-資料以單向管線流動，分為七個階段；每個階段讀取上游產物、寫入自己的輸出，可獨立重跑，所有中間產物為**單次記錄、覆蓋更新**（不做 history）。
+| 文件 | 內容 |
+| --- | --- |
+| `README.md`（本文件） | 專案介紹、安裝與執行、專案狀態 |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | 架構地圖：模塊有哪些、怎麼串接、邊界與不變式 |
+| [`docs/01_fetch.md`](docs/01_fetch.md) | 來源設定與抓取 |
+| [`docs/02_extract.md`](docs/02_extract.md) | 抽取 |
+| [`docs/03_clean.md`](docs/03_clean.md) | 清理 |
+| [`docs/04_chunk.md`](docs/04_chunk.md) | 切分 |
+| [`docs/05_embed.md`](docs/05_embed.md) | 向量化 |
+| [`docs/06_index.md`](docs/06_index.md) | 入庫 |
+| [`docs/07_troubleshooting.md`](docs/07_troubleshooting.md) | 疑難排解 |
+| [`AGENTS.md`](AGENTS.md) | AI Agent 在本專案工作的規則與驗收標準 |
+
+每份模塊文件都包含：輸入與輸出、處理方法、為什麼這樣做、否決的方案、驗證方式、待定事項。
+
+## 架構總覽
 
 ```mermaid
 flowchart TD
-    S["sources.json<br>version + mod + entry_url"] --> F["[2] fetch_pages.py<br>抓取 raw HTML"]
-    F --> RAW["data/raw/1.21.1/applied-energistics-2/<chapter>/*.html<br>+ _manifest.json"]
-    RAW --> E["[3] extract_pages.py<br>trafilatura 抽取主文"]
-    E --> EXT["data/processed/extracted/<br>1.21.1/applied-energistics-2/<chapter>/*.json"]
-    EXT --> C["[4] clean_pages.py<br>過濾噪音"]
-    C --> CLN["data/processed/cleaned/<br>1.21.1/applied-energistics-2/<chapter>/*.md"]
-    CLN --> K["[5] chunk_pages.py<br>真 tokenizer 切分"]
-    K --> CHK["data/processed/chunks/chunks.jsonl"]
-    CHK --> M["[6] embed_chunks.py<br>MiniLM 向量化"]
-    M --> EMB["data/processed/embeddings/embeddings.jsonl"]
-    EMB -.擱置.-> I["[7] index_chunks.py<br>寫入 pgvector"]
+    S["sources.json<br>版本 + 模組 + 入口 URL"] --> F["來源設定與抓取<br>sitemap.xml 驅動"]
+    F --> E["抽取<br>BS4 整理輸入 → trafilatura 主文 + 標題結構"]
+    E --> C["清理<br>去噪 + 標題層級正規化"]
+    C --> K["切分<br>子母分層"]
+    K -- child --> M["向量化<br>BGE-M3"]
+    M -- child 向量 --> I["入庫<br>PostgreSQL + pgvector（擱置）"]
+    K -- parent --> I
+    I -.範圍外.-> R["Retrieval + Streamlit UI<br>英文檢索 → 繁中回答 + 來源"]
 ```
 
-**[7] 目前擱置**——schema、入庫方式與索引類型待 [1]–[6] 跑通後依實際資料定義。
-
-> 各階段的完整定義（職責、參數、schema、失敗處理）見 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
-
-## 目錄結構
-
-```text
-Minecraft_RAG/
-├── sources.json                      # [1] 入口 URL + 版本 + 模組
-├── data/
-│   ├── raw/                          # [2] 抓取
-│   │   ├── _manifest.json            #     單次抓取記錄（覆蓋）
-│   │   └── 1.21.1/applied-energistics-2/<chapter>/*.html
-│   ├── processed/
-│   │   ├── extracted/1.21.1/applied-energistics-2/<chapter>/*.json   # [3] trafilatura 抽取
-│   │   ├── extracted_readable/同結構 *.md                            # [3] 人類可讀衍生物（不入版控）
-│   │   ├── cleaned/1.21.1/applied-energistics-2/<chapter>/*.md       # [4] 清理後 Markdown
-│   │   ├── chunks/chunks.jsonl           # [5] 切分
-│   │   └── embeddings/embeddings.jsonl   # [6] 向量
-│   └── evaluation/                   # 評估（未來範圍，不屬 [1]–[7]）
-├── reports/
-│   ├── extraction_report.md          # [3] 單次報告（覆蓋）
-│   └── cleaning_report.md            # [4] 單次報告（覆蓋）
-├── src/
-│   ├── fetch_pages.py                # [2] 抓取
-│   ├── extract_pages.py              # [3] 抽取
-│   ├── clean_pages.py                # [4] 清理
-│   ├── chunk_pages.py                # [5] 切分
-│   ├── embed_chunks.py               # [6] Embedding
-│   └── index_chunks.py               # [7] 入庫（擱置）
-├── ARCHITECTURE.md                   # 目標架構（[1]–[7]）
-├── AGENTS.md                         # AI Agent 工程契約
-├── pyproject.toml / requirements.txt # 專案 metadata 與依賴
-├── .env.example                      # 環境變數範本（query 階段用）
-└── .gitignore
-```
-
-資料產物一律按 `<version>/<mod_slug>/<chapter>/` 分層。`mod_slug`、`chapter`、`page_slug` 都由 [2] 從 URL 解析後寫入路徑，下游階段直接從路徑讀，不需查 JSON。沒有 chapter 的頁（如 `getting-started`）歸入 `other/`。
-
-## 各階段說明
-
-| 階段 | 模組 | 職責 |
-| --- | --- | --- |
-| [1] 入口 | `sources.json` | `version` + `mod`（原名）+ `entry_url`；入口頁**僅推導站台根，不抓取**，逐頁 URL 由 [2] 解析 **sitemap.xml** 產生；`sources.json` 為整條 URL 鏈的起點 |
-| [2] 抓取 | `src/fetch_pages.py` | 只做網路 I/O；由 `robots.txt` 宣告發現 sitemap.xml，以 `xml.etree.ElementTree` 解析取得逐頁 URL（無可用 sitemap → fail-fast，不爬側邊欄）；逐頁抓取、間隔 0.5 秒；`mod` 經 python-slugify 轉 `mod_slug`，`chapter`／`page_slug` 由 URL 解析寫入路徑；輸出 raw HTML 與 `_manifest.json` |
-| [3] 抽取 | `src/extract_pages.py` | trafilatura 從 raw HTML 抽取主文；輸出含 `title`／`text`／`source`／`hostname`／`http_status` 的 JSON（`title` 保留不異動）；**navigation_only 頁跳過不輸出**（規則一：URL 以 `-index` 結尾；規則二：短文字且 `<article>` 高連結密度）；另產出人類可讀衍生物 `extracted_readable/*.md` + `_index.md`（真值以 JSON 為準，不入版控）；報告標示 `source` 為空的頁 |
-| [4] 清理 | `src/clean_pages.py` | 過濾 trafilatura 誤留的噪音，輸出含 frontmatter（至少 `title`、`source_url`）與 `# <title>` 的 Markdown；**噪音規則待第一波資料後歸納** |
-| [5] 切分 | `src/chunk_pages.py` | **只讀 cleaned MD**（`title`／`source_url` 從 frontmatter 讀，其餘 metadata 從路徑讀）；MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter；MiniLM **真 tokenizer**；每 chunk ≤ 254 wordpieces |
-| [6] Embedding | `src/embed_chunks.py` | all-MiniLM-L6-v2（384 維、正規化、**revision 鎖定**）；輸入拼接 `{mod} \| {page} \| {section}\n\n{text}` |
-| [7] 入庫 | `src/index_chunks.py` | 寫入 pgvector；**擱置**，schema 待資料準備後定義 |
-
-### 各階段套件
-
-> 本表為速查，給人閱讀；正式契約見 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
-
-| 階段 | 套件 | 職責 | 不負責 |
-| --- | --- | --- | --- |
-| [1] 入口 | 無（靜態設定） | `sources.json` 定義版本、模組與入口 URL | 不含逐頁 URL 清單（由 [2] 解析 sitemap.xml 產生） |
-| [2] 抓取 | requests + `xml.etree.ElementTree` + python-slugify | 網路 I/O；解析 sitemap.xml 取得逐頁 URL；`mod` → `mod_slug` | HTML→Markdown 轉換、主文抽取、導覽爬取 |
-| [3] 抽取 | trafilatura（+ BeautifulSoup 僅供連結密度計算） | 抽取主文與 metadata（`title`／`text`／`source`／`hostname`）；navigation_only 判定 | HTML 手工解析、清理 |
-| [4] 清理 | 本專案自寫規則 | 過濾 trafilatura 誤留的噪音 | 規則待第一波資料後歸納 |
-| [5] 切分 | MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter | 依標題層級與字元邊界切分；MiniLM 真 tokenizer 計數 | — |
-| [6] Embedding | sentence-transformers（MiniLM） | 向量化（正規化、revision 鎖定） | — |
-| [7] 入庫 | pgvector | 寫入向量庫（**擱置**，schema 待定） | — |
-
-本專案手寫的只有 [2] 的 sitemap 解析與路徑組合、[3] 的 navigation_only 判定、[4] 的噪音清理規則、各階段的檔案 I/O；HTML 解析、主文抽取、切分皆交給成熟套件。
-
-### [5] 切分參數
-
-- `chunk_size`：200 token
-- `chunk_overlap`：40–50 token
-- tokenizer：MiniLM 真實 tokenizer（非字元近似）
-- **切分後斷言**：每個 chunk ≤ 254 wordpieces（模型 `max_seq_length` 256，保留 2 wordpieces 餘裕）
-
-### chunk_id 格式
-
-```
-{mod_slug}_{page_slug}_{seq}_{version}
-```
-
-例如 `applied-energistics-2_energy_0001_v1`。`seq` 以頁為單位，同一頁的 chunk 從 `0001` 開始遞增；結尾的 `v1` 是**內容修訂號**——該 chunk 內容需要更新時迭代為 `v2`、`v3`。
-
-> `mod_slug`／`chapter`／`page_slug` 全部由 [2] 從 URL 解析後寫入目錄路徑，[5] 直接從路徑讀（`mod_slug`、`chapter` 從資料夾名，`page_slug` 從檔名），不需讀任何 JSON。
+每個模塊讀上游產物、寫自己的輸出，可以單獨重跑；所有中間產物都是單次記錄、整份覆寫。模塊地圖、邊界與不變式見 [`ARCHITECTURE.md`](ARCHITECTURE.md)；各模塊的細節見 `docs/`。
 
 ## 使用方式
 
@@ -121,77 +51,81 @@ Minecraft_RAG/
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Windows
 ```
 
-**有 NVIDIA GPU 時**，Windows 上 PyPI 的 `torch` 是 CPU-only build，須先從 PyTorch 的 cu130 index 手動裝 GPU 版，再裝其餘依賴（torch 是 sentence-transformers 的傳遞依賴，不寫進 `requirements.txt`）：
+Windows：
+
+```bash
+.venv\Scripts\activate
+```
+
+macOS／Linux：
+
+```bash
+source .venv/bin/activate
+```
+
+**有 NVIDIA GPU 時**：Windows 上 PyPI 的 `torch` 是 CPU-only build，須先從 PyTorch 的 cu130 index 安裝 GPU 版，再裝其餘依賴（torch 是 sentence-transformers 的傳遞依賴，不寫進 `requirements.txt`）：
 
 ```bash
 pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cu130
-pip install -r requirements.txt
 ```
-
-無 GPU 或不需要 GPU 加速時，直接裝即可：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-主要依賴：requests、beautifulsoup4、trafilatura、langchain-text-splitters、python-slugify、sentence-transformers。
+沒有 GPU 時，直接執行 `pip install -r requirements.txt` 即可。
 
 ### 執行 pipeline
 
 ```bash
-python src/fetch_pages.py     # [2] 由 sitemap.xml 抓 1.21.1 所有頁面 → data/raw/
-python src/extract_pages.py   # [3] trafilatura 抽取主文 → data/processed/extracted/
-python src/clean_pages.py     # [4] 清理 → data/processed/cleaned/
-python src/chunk_pages.py     # [5] 切分 → data/processed/chunks/chunks.jsonl
-python src/embed_chunks.py    # [6] 向量化 → data/processed/embeddings/embeddings.jsonl
+python src/fetch_pages.py
 ```
 
-每個階段都可單獨重跑，輸出為**整份覆寫**（冪等）。[2] 失敗的頁面不會重試，會記錄在 `_manifest.json` 的 `http_status` 與 `local_path: null`，人工查驗後再次執行即可。
+```bash
+python src/extract_pages.py
+```
 
-- 執行環境：Python 3.12 以上。
-- Embedding 模型為本機執行，首次跑 [6] 時才會自 Hugging Face 下載（約 90 MB）。
-- **[7] 入庫暫不執行**：pgvector 的 schema、入庫方式與索引類型待 [1]–[6] 跑通後定義。
+```bash
+python src/clean_pages.py
+```
 
-### 常見操作
+```bash
+python src/chunk_pages.py
+```
 
-- **改變抓取範圍**：範圍目前由 `version` + sitemap.xml 決定（`sources.json` 的 `exclude`／`include` 欄位保留但 [2] 尚未讀取）；更換 `entry_url` 可改變站台根。入口頁本身不會進入知識庫。
-- **調整切分粒度**：`src/chunk_pages.py` 的 `chunk_size`／`chunk_overlap`；調整後 [6] 必須重跑。
-- **金鑰管理**：LLM 的 API key 一律透過 `.env` 讀取（範本見 `.env.example`），不得寫入程式碼或版控。
+| 指令 | 模塊 | 輸出 |
+| --- | --- | --- |
+| `src/fetch_pages.py` | 來源設定與抓取 | `data/raw/` |
+| `src/extract_pages.py` | 抽取 | `data/processed/extracted/`、`reports/extraction_report.md` |
+| `src/clean_pages.py` | 清理 | `data/processed/cleaned/`、`reports/cleaning_report.md` |
+| `src/chunk_pages.py` | 切分 | `data/processed/chunks/`、`reports/chunking_report.md` |
+| `src/embed_chunks.py` | 向量化（尚未實作） | `data/processed/embeddings/` |
 
-## 設計決策
+- 抓取失敗的頁面不會重試，會記錄在 `_manifest.json`；人工查驗後重新執行即可。
+- 切分首次執行時會從 Hugging Face 下載 BGE-M3 的 tokenizer 檔（不含模型權重）。
+- 向量化使用的 BGE-M3 模型約 2.3 GB，首次執行時才會從 Hugging Face 下載，建議使用 GPU。
+- 入庫目前擱置。
 
-| 決策 | 理由 |
+### 金鑰
+
+LLM 的 API key 一律透過 `.env` 讀取（範本見 `.env.example`），不得寫入程式碼或版控。
+
+## 專案狀態
+
+> 開發期間暫時保留，專案完成後移除。最後更新：2026-10-29；實際狀態以程式碼與 Git 為準。
+
+| 模塊 | 狀態 |
 | --- | --- |
-| 廢棄舊 `sources.json`（6 頁人工清單） | 改為「版本 + 模組 + 入口 URL」，範圍由 **sitemap.xml** 決定（見 `docs/adr/ADR-001`），不再逐頁人工維護 |
-| [2] URL 真值來源改用 sitemap.xml | 站台為 Next.js SPA，側邊欄為情境式展開且 `items-blocks-machines` 索引頁為 CSR；側邊欄 BFS 僅得 39/124 頁。改以 sitemap 為真值來源（125 頁，排除入口 124），廢除側邊欄爬取且不保留 fallback |
-| 抓取與抽取分離 | `fetch_pages.py` 只做網路 I/O；HTML 主文抽取交給 trafilatura，避免自寫轉換器的維護成本 |
-| 目錄按 `<version>/<mod_slug>/<chapter>/` 分 | 版本、模組與章節隨資料一路傳遞；metadata 由路徑承載，下游不需讀 JSON |
-| 路徑三元素由 [2] 統一解析 | `mod_slug`（slugify）／`chapter`（URL 倒數第二段）／`page_slug`（URL 最後一段）只在 [2] 計算一次，其餘階段全部從路徑讀，不重複推導 |
-| `title` 帶進 chunk metadata | extracted JSON 的標題原封傳到 chunk，生成答案直接用 chunk 的 `title`，不回查 JSON（資料不異動） |
-| cleaned MD 保留 frontmatter 與 H1 | frontmatter 承載 `title`／`source_url` 供 [5] 讀 metadata；H1 供 MarkdownHeaderTextSplitter 當切分結構，兩者各按各的邏輯索取 |
-| 單次記錄、覆蓋更新 | 所有中間產物不做 history，重跑即重產生 |
-| `chunk_id` 含修訂號 | chunk 內容更新時可迭代版本號，區隔新舊內容 |
-| embedding 輸入拼接標題 | `{mod} \| {page} \| {section}\n\n{text}`，讓向量帶有頁面與章節語意 |
-| pgvector 選型 | 已確認合理；schema 待資料準備後定義 |
-
-## 開發狀態
-
-| 階段 | 狀態 |
-| --- | --- |
-| [1] 入口 | `sources.json` 已套用新格式（`version`／`mod`／`entry_url`／`exclude`／`include`） |
-| [2] 抓取 | 已實作（`src/fetch_pages.py`）：sitemap.xml 真值來源、版本過濾、路徑三元素、`_manifest.json`；124 頁已跑通 |
-| [3] 抽取 | 已實作（`src/extract_pages.py`）：trafilatura 抽取、navigation_only 兩規則判定、人類可讀衍生物；121 頁已跑通（3 頁導覽索引跳過） |
-| [4] 清理 | 待實作；噪音規則待第一波資料後歸納 |
-| [5] 切分 | 待實作（改用 langchain-text-splitters + 真 tokenizer） |
-| [6] Embedding | 待依新 schema 實作（revision 鎖定 + 新輸入格式） |
-| [7] 入庫 | **擱置**，schema 待 [1]–[6] 跑通後定義 |
-
-> 本表反映的是**目標狀態下的實作進度**，與實際程式碼狀態以 Git 與檔案為準。
+| 來源設定與抓取 | 已實作：1.21.1 共 124 頁 |
+| 抽取 | 已實作：119 頁輸出（5 頁跳過：3 個導覽頁、2 個已確認的跳轉頁）；含標題結構與配方 |
+| 清理 | 已實作：119 頁輸出（0 頁跳過）；69 頁帶章節標題、85 頁附配方 |
+| 切分 | 已實作：119 頁 → parent 387 個、child 466 個（parent ≤ 2048、child ≤ 256） |
+| 向量化 | 待實作：模型已定（BGE-M3，1024 維） |
+| 入庫 | 擱置：schema 待前面各模塊跑通後定義 |
 
 ## 安全須知
 
-- `.env`、`gcm-diagnose.log`（含歷史診斷輸出）等敏感檔案已列入 `.gitignore`，不會進入版控；**請勿直接壓縮分享整個專案資料夾**，改以 Git clone 或明確挑選檔案，避免本機未追蹤的敏感檔案一併外洩。
-- 若曾在本機產生含 API key 的診斷檔，該 key 應視為已外洩並至 provider 端輪換。
+- `.env`、`gcm-diagnose.log` 等敏感檔案已列入 `.gitignore`。請勿直接壓縮分享整個專案資料夾，改用 Git clone 或明確挑選檔案。
+- 若曾在本機產生含 API key 的診斷檔，該 key 應視為已外洩，請至 provider 端輪換。

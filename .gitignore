@@ -2,27 +2,22 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# 秘密與敏感檔案（不得提交，見 AGENTS.md §9）
 .env
 .env.*
+!.env.example
+gcm-diagnose.log
 
-# [3] 人類可讀衍生物（真值為 extracted JSON，此目錄可由 [3] 重產）
+# 抽取的人類可讀衍生物（真值為 extracted JSON，可由抽取模塊重產）
 data/processed/extracted_readable/
 
-# pipeline 產物：各階段可整份重產，不入版控（目錄骨架由 .gitkeep 保留）
+# pipeline 產物：各模塊可整份重產，不入版控（目錄骨架由 .gitkeep 保留）
 data/raw/
 data/processed/extracted/
 data/processed/cleaned/
 data/processed/chunks/
 data/processed/embeddings/
-reports/extraction_report.md
-reports/cleaning_report.md
 
-.codex/
-.zcode/
-read.md
-recall.md
-gcm-diagnose.log
-REVIEW.md
-onetime-report.md
-project-limit-skill-summary.txt
-codex.ps1
+# 各模塊產生的單次報告（目錄骨架由 reports/.gitkeep 保留）
+reports/*.md
