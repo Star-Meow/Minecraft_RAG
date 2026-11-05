@@ -49,7 +49,8 @@ embedding_input = f"{section}\n\n{text}"
 - revision 以常數鎖定，並把 `model_name`、`model_revision` 寫入輸出。[切分](04_chunk.md) 的 tokenizer 使用同一個 revision（`chunk_pages.py` 的 `TOKENIZER_REVISION`，已核對一致；不一致即中止）。
 - 缺少 provenance 欄位（`chunk_id`、`source_url`、`title`、`version`、`mod`、`chapter`、`page`、`section`）或 `chunk_id` 重複 → 中止。
 - `--dry-run`：只組 embedding 輸入、做 tokenizer 斷言與對帳並印出摘要；**不載入模型、不初始化 CUDA、不寫任何檔案**。
-- 批次大小與裝置（GPU 可用時用 GPU，否則 CPU）為實作細節，見程式常數。
+- 裝置：**必須使用 GPU（CUDA）**；`SentenceTransformer` 明確指定 `device="cuda"`。非 dry-run 在載入模型、寫檔、刪檔之前先檢查 `torch.cuda.is_available()`，不可用即中止（exit 1），不退回 CPU，也不改動既有輸出。實際裝置名稱與 torch 版本寫入 stdout 與報告「設定」段。
+- 批次大小為實作細節，見程式常數。
 
 ## 3. 為什麼這樣做
 
@@ -57,7 +58,7 @@ embedding_input = f"{section}\n\n{text}"
 
 原定的 `sentence-transformers/all-MiniLM-L6-v2`（384 維）輸入上限只有 256 wordpieces（`max_seq_length` 256，契約要求每 chunk ≤ 254），迫使 chunk 切到 200 token 左右，且必須為 header 預留空間。改採子母分層後，parent 以章節為單位，需要能容納較長內容的模型；本專案也以學習成熟的 RAG 技術棧為目標之一。BGE-M3 的輸入上限為 8192 tokens，且支援多語言。
 
-模型檔約 2.3 GB，已由使用者授權下載至本機快取；建議使用 GPU（torch cu130 build，見 `AGENTS.md` §8）。
+模型檔約 2.3 GB，已由使用者授權下載至本機快取；需要 NVIDIA GPU（torch cu130 build，見 `AGENTS.md` §8）。
 
 ### embedding 輸入：child 前加 `section`，不附 parent（2026-11-05 人工裁定）
 
@@ -67,6 +68,7 @@ embedding_input = f"{section}\n\n{text}"
 
 - **維持 MiniLM**：256 的上限和章節級 parent 不相容。
 - **`BAAI/bge-base-en-v1.5`**：只支援英文、上限 512 tokens；BGE-M3 支援多語言，上限也更長。
+- **CUDA 不可用時退回 CPU**（2026-11-05 人工裁定）：CPU 向量與 GPU 向量可能有數值差異，破壞輸出的可重現性；不可用時直接中止，由人處理環境。
 - **BGE-M3 的 sparse／ColBERT 模式**：需要新依賴 `FlagEmbedding`，日後要用須另行授權。
 - **embedding 輸入附整個 parent**：同 parent 的 child 向量趨同，檢索粒度退化。
 - **另加 title 前綴**：`section` 已含 title，重複。
@@ -77,9 +79,10 @@ embedding_input = f"{section}\n\n{text}"
 ## 5. 驗證方式
 
 - `python src/embed_chunks.py --dry-run`（不需 GPU）：輸入筆數與 `children.jsonl` 一致、`chunk_id` 唯一；每筆 `embedding_input` 恰為 `f"{section}\n\n{text}"`；每筆 token 數（含 special tokens）≤ 8192；連跑兩次輸出一致。
-- `python src/embed_chunks.py`（需 GPU 或 CPU 實際計算）：每筆 1024 維、`model_revision` 非空；與輸入 child 逐筆對應（順序與 ID 一致、11 個原欄位不變）。
+- `python src/embed_chunks.py`（需 CUDA GPU）：每筆 1024 維、`model_revision` 非空；與輸入 child 逐筆對應（順序與 ID 一致、11 個原欄位不變）。
   - norm = 1，容差 **1e-4**（`NORM_TOLERANCE`；float32 正規化後誤差通常在 1e-6 量級）。
   - 連跑兩次：非向量欄位逐位元相同；向量採容差比對，**每個元素絕對誤差 ≤ 1e-5**，實測最大誤差於驗收時回報。超過時不放寬標準，如實回報後由人工裁定。
+- CUDA 不可用（例如 `CUDA_VISIBLE_DEVICES=-1`）時執行：結束碼 1、不載入模型、`embeddings/<version>/` 與報告不變（雜湊比對）。空字串不會隱藏 GPU（`torch.cuda.is_available()` 仍為 True）；執行前須先確認 `torch.cuda.is_available()` 為 False 再解讀結果。
 - dry-run 的性質是「不載入模型權重、不初始化 CUDA、不寫檔」；`transformers`／`sentence_transformers`／`torch` 可能因 `chunk_pages` 的匯入而被載入，不在此限。
 
 ## 6. 待定事項
