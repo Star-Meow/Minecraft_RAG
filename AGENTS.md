@@ -93,9 +93,10 @@ Agent 必須區分以下資訊來源：
 | `src/clean_pages.py` | [4] 清理 | 清理與標題層級正規化；文件 `docs/03_clean.md` |
 | `src/chunk_pages.py` | [5] 切分 | 子母分層切分；文件 `docs/04_chunk.md` |
 | `src/embed_chunks.py` | [6] 向量化 | Embedding（目標狀態）；文件 `docs/05_embed.md` |
-| `src/index_chunks.py` | [7] 入庫 | 寫入 pgvector（擱置）；文件 `docs/06_index.md` |
+| `src/index_chunks.py` | [7] 入庫 | 寫入 pgvector（尚未實作）；文件 `docs/06_index.md` |
 | `data/` | — | pipeline 產物 |
 | `reports/` | — | 各階段的單次報告 |
+| `infra/` | — | [7] 所用資料庫的 Docker Compose 設定（PostgreSQL + pgvector，不含任何密碼）；[7] 只依賴 `.env` 的 `DATABASE_URL`，不依賴 Docker |
 | `ARCHITECTURE.md` | — | 架構地圖 |
 | `docs/01`～`06_*.md` | — | 各模塊的契約、方法、決策理由、驗證方式、待定事項 |
 | `docs/07_troubleshooting.md` | — | 疑難排解（只追加） |
@@ -116,7 +117,7 @@ pipeline 模組一律放在 `src/`，以 `PROJECT_ROOT = Path(__file__).resolve(
 | [4] 清理 | extracted JSON | `cleaned/**/*.md`、`cleaning_report.md` | 噪音規則、標題正規化、空章節移除依 `docs/03_clean.md`；規則只作用於正文；被排除的頁不輸出、以報告為憑 |
 | [5] 切分 | cleaned MD | child chunks + parent 文件 | 只讀 cleaned MD；子母分層；以 BGE-M3 tokenizer 計數並斷言上限（`docs/04_chunk.md`）；`source_url` 為空的頁不產出 |
 | [6] Embedding | child chunks | child + 向量 | BGE-M3、1024 維、正規化、revision 鎖定（`docs/05_embed.md`）；與輸入逐筆對應 |
-| [7] 入庫 | [6] 向量 + [5] parent | PostgreSQL + pgvector | **擱置**：schema、入庫方式、索引不得預先定義 |
+| [7] 入庫 | [6] 向量 + [5] parent | PostgreSQL + pgvector | schema **擱置**（不得預先定義）；索引類型、重跑策略、目標資料庫斷言已定（見 `docs/06_index.md` §2.1） |
 
 Pipeline invariants（跨階段不可破壞）：
 
@@ -149,6 +150,7 @@ Pipeline invariants（跨階段不可破壞）：
 | [5] 切分 | langchain-text-splitters（`MarkdownHeaderTextSplitter` + `RecursiveCharacterTextSplitter`）；子母分層；BGE-M3 tokenizer |
 | [6] Embedding | `BAAI/bge-m3`，sentence-transformers 本機執行，dense、1024 維、正規化、revision 鎖定；sparse／ColBERT 不採用 |
 | [7] 向量庫 | PostgreSQL + pgvector |
+| [7] 資料庫環境 | Docker Compose（`infra/docker-compose.yml`）：單容器 PostgreSQL 18 + pgvector（`extversion >= 0.8.2`），兩個 database（`minecraft_rag`、`minecraft_rag_test`），只綁 `127.0.0.1`；密碼只存在 `.env`；[7] 程式只依賴 `DATABASE_URL`，不依賴 Docker |
 | LLM | OpenAI（回答生成） |
 | 查詢語言 | 英文檢索 + 繁中回答（BGE-M3 支援多語言，待重新評估） |
 | UI | Streamlit（最後階段） |
@@ -174,7 +176,7 @@ Pipeline invariants（跨階段不可破壞）：
 - remote repository creation（一律 private，只有使用者明確要求才可 public）
 - 修改知識來源（`sources.json`）
 - 寫入專案根目錄之外的路徑（含全域 `~/.codex/skills/`）。例外：Agent 工具本身的暫存與記憶目錄、套件與模型的快取目錄（例如 `~/.cache/huggingface`）；下載仍依 §10 先詢問。
-- 刪除既有資料產物或既有檔案。例外：各階段依模塊文件重建自己擁有的版本子樹——[2] `raw/<version>/`、[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）、[4] `cleaned/<version>/`、[5] `chunks/<version>/`（2026-10-29 授權）、[6] `embeddings/<version>/`（2026-11-05 授權）；條件皆為範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空。其他階段如需比照，須另行授權。
+- 刪除既有資料產物或既有檔案。例外：各階段依模塊文件重建自己擁有的版本子樹——[2] `raw/<version>/`、[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）、[4] `cleaned/<version>/`、[5] `chunks/<version>/`（2026-10-29 授權）、[6] `embeddings/<version>/`（2026-11-05 授權）；條件皆為範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空。[7] 例外（2026-11-07 授權）：可刪除 PostgreSQL rag 兩表中該 version 的資料；條件為模式（`update`／`rebuild`）由使用者確認後明確傳入、單一交易、通過目標資料庫斷言、範圍限定該 version，不得 DROP／TRUNCATE（見 `docs/06_index.md` D5、D5-1）。其他階段如需比照，須另行授權。
 
 例外：檢查 `.gitignore` 內容，以及用 `git status`／`git ls-files` 確認敏感檔案的版控狀態，不屬於禁止項。
 

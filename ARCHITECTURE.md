@@ -27,7 +27,7 @@
                         ┌──────────┐            child + 向量                  ┌──────────┐
                         │   入庫    │ ◀────────────────────────────────────── │  向量化   │
                         └──────────┘                                         └──────────┘
-                     PostgreSQL + pgvector（擱置）
+                     PostgreSQL + pgvector（尚未實作）
 ```
 
 抽取：先整理 HTML 輸入，再由 trafilatura 抽取主文。
@@ -41,7 +41,7 @@
 | 清理 | `docs/03_clean.md` | `src/clean_pages.py` | extracted JSON | `data/processed/cleaned/` |
 | 切分 | `docs/04_chunk.md` | `src/chunk_pages.py` | cleaned MD | `data/processed/chunks/` |
 | 向量化 | `docs/05_embed.md` | `src/embed_chunks.py` | child chunks | `data/processed/embeddings/` |
-| 入庫 | `docs/06_index.md` | `src/index_chunks.py`（擱置） | child 向量、parent 文件 | PostgreSQL + pgvector |
+| 入庫 | `docs/06_index.md` | `src/index_chunks.py`（尚未實作） | child 向量、parent 文件 | PostgreSQL + pgvector |
 
 其他：各模塊的單次報告放在 `reports/`（不入版控）；評估資料預留在 `data/evaluation/`（範圍外）；疑難排解見 `docs/07_troubleshooting.md`。
 
@@ -80,3 +80,4 @@
 - **更新行為**：所有中間產物都是單次記錄、整份覆寫；各模塊可獨立重跑（冪等）。`sources.json` 人工維護；各模塊擁有自己的版本子樹（`raw/<version>/`、`extracted/<version>/`、`extracted_readable/<version>/`、`cleaned/<version>/`、`chunks/<version>/`），全部處理完且有產出後才清空重建，不留下前次執行的舊檔。
 - **不入版控的產物**：`data/` 下的資料產物、`extracted_readable/`、`_fetch_log.txt`、`reports/` 下各模塊產生的報告。
 - **模型版本**：模型與 tokenizer 鎖定 revision 並記錄於輸出。
+- **資料庫環境**：`infra/` 放 [7] 所用資料庫的 Docker Compose 設定（PostgreSQL + pgvector，不含任何密碼）。入庫模塊只依賴 `.env` 的 `DATABASE_URL`（測試用 `DATABASE_URL_TEST`），不知道 Docker 的存在；資料庫由 `infra/` 的 Compose 啟動。
