@@ -74,7 +74,7 @@ Agent 必須區分以下資訊來源：
 | Normative（應該怎麼做） | `AGENTS.md`；`ARCHITECTURE.md`；`docs/` 模塊文件的契約 | 規則與契約 |
 | Current State（實際狀況） | 程式碼、資料產物、Git 狀態、重新執行的檢查 | 判斷是否已實作、是否正確 |
 | Target State（目標狀態） | `ARCHITECTURE.md`、`docs/` 模塊文件 | 目標架構；不是進度。不得因某模塊列在其中就假設已實作 |
-| 過程文件（非規範、非現況） | `reports/`、README 的專案狀態、根目錄的交接或筆記檔 | 只作為線索；引用前必須以實際檔案重新驗證 |
+| 過程文件（非規範、非現況） | `reports/`、`.agent-workspace/`、README 的專案狀態、根目錄的交接或筆記檔 | 只作為線索；引用前必須以實際檔案重新驗證 |
 
 **Unknown Rule**：無法由實際檔案、程式碼、資料產物或規範文件確認的資訊：
 
@@ -97,6 +97,7 @@ Agent 必須區分以下資訊來源：
 | `data/` | — | pipeline 產物 |
 | `reports/` | — | 各階段的單次報告 |
 | `infra/` | — | [7] 所用資料庫的 Docker Compose 設定（PostgreSQL + pgvector，不含任何密碼）；[7] 只依賴 `.env` 的 `DATABASE_URL`，不依賴 Docker |
+| `.agent-workspace/` | — | 監督者與執行端的本機溝通區（任務、進度、報告；不入版控、不得當作規範引用）；協定見 §15.1 |
 | `ARCHITECTURE.md` | — | 架構地圖 |
 | `docs/01`～`06_*.md` | — | 各模塊的契約、方法、決策理由、驗證方式、待定事項 |
 | `docs/07_troubleshooting.md` | — | 疑難排解（只追加） |
@@ -176,7 +177,7 @@ Pipeline invariants（跨階段不可破壞）：
 - remote repository creation（一律 private，只有使用者明確要求才可 public）
 - 修改知識來源（`sources.json`）
 - 寫入專案根目錄之外的路徑（含全域 `~/.codex/skills/`）。例外：Agent 工具本身的暫存與記憶目錄、套件與模型的快取目錄（例如 `~/.cache/huggingface`）；下載仍依 §10 先詢問。
-- 刪除既有資料產物或既有檔案。例外：各階段依模塊文件重建自己擁有的版本子樹——[2] `raw/<version>/`、[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）、[4] `cleaned/<version>/`、[5] `chunks/<version>/`（2026-10-29 授權）、[6] `embeddings/<version>/`（2026-11-05 授權）；條件皆為範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空。[7] 例外（2026-11-07 授權）：可刪除 PostgreSQL rag 兩表中該 version 的資料；條件為模式（`update`／`rebuild`）由使用者確認後明確傳入、單一交易、通過目標資料庫斷言、範圍限定該 version，不得 DROP／TRUNCATE（見 `docs/06_index.md` D5、D5-1）。其他階段如需比照，須另行授權。
+- 刪除既有資料產物或既有檔案。例外：各階段依模塊文件重建自己擁有的版本子樹——[2] `raw/<version>/`、[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）、[4] `cleaned/<version>/`、[5] `chunks/<version>/`（2026-10-29 授權）、[6] `embeddings/<version>/`（2026-11-05 授權）；條件皆為範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空。[7] 例外（2026-11-07 授權）：可刪除 PostgreSQL rag 兩表中該 version 的資料；條件為模式（`update`／`rebuild`）由使用者確認後明確傳入、單一交易、通過目標資料庫斷言、範圍限定該 version，不得 DROP／TRUNCATE（見 `docs/06_index.md` D5、D5-1）。`.agent-workspace/workers/worker_<目的>/` 例外（2026-11-08 授權）：工作串合併或驗收且整併完成後，可刪除該目錄；條件為路徑斷言（必須是 `.agent-workspace/workers/` 的直接子目錄，名稱符合 `^worker_[a-z]+(_[a-z]+)*$`）、該路徑未被 git 追蹤、整併清單已完成（見 §15.1）。其他階段如需比照，須另行授權。
 
 例外：檢查 `.gitignore` 內容，以及用 `git status`／`git ls-files` 確認敏感檔案的版控狀態，不屬於禁止項。
 
@@ -272,6 +273,7 @@ Agent 不得宣稱未執行的驗證為成功。
 | `docs/07_troubleshooting.md` | 坑紀錄（現象、根因、處置、證據）與症狀速查；只追加不改寫 | 過程敘事 |
 | `AGENTS.md` | Agent 行為規則、權限邊界、不變式、驗收標準 | 欄位與參數細節（引用模塊文件）、進度、實測數字 |
 | `reports/` | 程式產生的單次報告（不入版控） | 規範（不得被當作規則引用） |
+| `.agent-workspace/` | 監督者與執行端的本機溝通區：任務要求、進度、單次報告（不入版控） | 規範（不得被當作規則引用）；決策與事實（須整併進 `docs/` 或 `AGENTS.md`） |
 
 - 不另立決策日誌：決策與否決的方案寫在受影響模塊文件的「為什麼這樣做」與「否決的方案」；跨模塊的決策寫在負責執行的模塊，其他模塊只放一行連結。
 - 參數調整、既有規則的小增補：更新對應的模塊文件即可。
@@ -283,6 +285,20 @@ Agent 不得宣稱未執行的驗證為成功。
 
 - 若有重大架構決策，同步更新對應的模塊文件、必要時更新 `ARCHITECTURE.md`，以及 `README.md` 的專案狀態。
 - 依 §17 回報：修改了什麼、驗證了什麼、尚未驗證什麼、已知風險、需要使用者決策的事項。
+
+### 15.1 監督者與執行端的溝通區
+
+- **性質**：`.agent-workspace/` 是本機的過程文件區，不入版控（`.gitignore`），不得當作規則引用；與 `AGENTS.md`、`docs/` 衝突時，以後者為準。
+- **結構**：`BOARD.md`（工作串看板，監督者寫）；`workers/worker_<目的>/` 下各有 `TASK.md`（要求，監督者寫）、`STATUS.md`（進度，執行端寫）、`REPORT.md`（最終回報，執行端寫）。
+- **命名**：資料夾名稱為 `worker_` 加上目的（小寫英文與底線，不放數字）；一個名稱對應一個工作串，同一時間只允許一個存活的對話；執行端開工時在 `STATUS.md` 寫入啟動時間以認領。
+- **單一寫入者**：每個檔案只有一方可寫；執行端不得修改 `TASK.md`，監督者不得修改 `STATUS.md`、`REPORT.md`。
+- **有效性**：三個檔案的開頭都有 `task_id`、`round`、`base_commit`；有效性只看 `task_id` 是否與 `TASK.md` 相符，不符者視為舊資料。
+- **執行端流程**：讀 `TASK.md`；一開工先覆寫 `STATUS.md`（`status: in_progress`）；完成後寫 `REPORT.md`（沿用 §17 的格式，並分為已獨立驗證、採信、尚未驗證三類）；對話最後只回覆一句報告已寫入。找不到 `TASK.md` 或路徑不可寫時，停止並在對話中說明，不得改用別處。
+- **內容限制**：不得出現密碼、完整連線 URL 或 `.env` 的內容。
+- **寫入鎖**：修改 repo 的任務（`modify-repo`）同一時間只能有一個，由 `BOARD.md` 標明；唯讀的計畫與驗證任務可平行。
+- **多個對象**：不在同一個檔案裡放給不同工作串的條目；拆分時，寫入集合相同者合併為一個任務，做事的人不同者（如使用者手動步驟）分開，前一步結果決定下一步設計者標示依賴，修改與獨立驗證分開。
+- **共用資訊不另立檔案**：專案規則放 `AGENTS.md`；模塊決策與事實放對應的 `docs/`；暫時性資訊放 `BOARD.md`。
+- **淘汰**：工作串合併（分支併入 main）或驗收後，先完成整併清單（決策進 `docs/`、值得保留的數字與證據進對應文件、規則與教訓進 `AGENTS.md`），全部有去處才可刪除該工作串目錄，並從 `BOARD.md` 移除；刪除由執行端或使用者執行，監督者不刪除。
 
 ## 16. Architecture Change Protocol
 

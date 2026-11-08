@@ -21,3 +21,6 @@ data/processed/embeddings/
 
 # 各模塊產生的單次報告（目錄骨架由 reports/.gitkeep 保留）
 reports/*.md
+
+# 監督者與執行端的本機溝通區（見 AGENTS.md §15.1）
+.agent-workspace/
