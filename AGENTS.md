@@ -1,7 +1,5 @@
 # AGENTS.md — Project Engineering Contract
 
-所有角色共通的邊界與不變式；不記進度或實測數字。
-
 | 文件 | 內容 |
 | --- | --- |
 | `ARCHITECTURE.md` | 架構地圖：模塊、邊界、不變式 |
@@ -24,6 +22,8 @@
 
 ## 3. Core Invariants
 
+以下規則不可因實作方便而放寬。
+
 ### 3.1 Data / Knowledge Integrity
 
 - 唯一資料來源：`guide.appliedenergistics.org` 的 AE2 官方 1.21.1 指南；不混用其他版本或非官方資料。
@@ -39,7 +39,7 @@
 ### 3.3 Reproducibility
 
 - 可重複執行的階段必須冪等（整份覆寫重產生）；中間產物單次記錄、覆蓋更新，不做 history。
-- 產物不得依賴不可追蹤的人工狀態；模型鎖定 revision 並記錄於輸出；不得降低驗證標準（§13）。
+- 產物不得依賴不可追蹤的人工狀態；模型鎖定 revision 並記錄於輸出。
 
 ## 4. Evidence and Truthfulness
 
@@ -56,7 +56,7 @@
 
 模塊與路徑對應見 `ARCHITECTURE.md` §3。
 
-- pipeline 模組與驗證、核對腳本一律放 `src/`；`src/` 只放程式與腳本，不放文件；不得在根目錄新增腳本。
+- pipeline 模組與驗證、核對腳本一律放 `src/`，以 `PROJECT_ROOT = Path(__file__).resolve().parent.parent` 定位專案根；`src/` 只放程式與腳本，不放文件；不得在根目錄新增腳本。
 - `.agent-workspace/` 是本機溝通區（不入版控、不得當作規範引用，見 §15.1）；`requirements.txt` 是依賴唯一來源（鎖定精確版本）；`infra/` 只放 [7] 的 Docker Compose（不含密碼）。
 - 「目標狀態」或「擱置」的模組以實際程式碼為準；檢索（`query.py`）與 UI（`app.py`）不在本契約範圍。
 
@@ -75,6 +75,8 @@
 | [7] 入庫 | schema **擱置**（不得預先定義）；其餘已定（`docs/06_index.md` §2.1） |
 
 ## 7. Data Rules
+
+以下為不可放寬的資料規則：
 
 - `title` 與 trafilatura 輸出不異動：`title` 經 cleaned MD frontmatter 原封帶入 chunk，下游不回查 JSON；`recipes` 只來自 HTML 配方區塊的文字屬性，不推測、不補值（`docs/02_extract.md`）。
 - 結構性 metadata（`version`／`mod`／`chapter`／`page`）以目錄路徑為準；內容性 metadata（`title`／`source_url`）以 frontmatter 為準。
@@ -97,10 +99,8 @@
 - 建立遠端 repository（一律 private，使用者明確要求才可 public）。
 - 修改 `sources.json`。
 - 寫入專案根目錄之外的路徑（含 `~/.codex/skills/`）；例外：Agent 工具暫存與記憶目錄、套件與模型快取目錄（如 `~/.cache/huggingface`），下載仍依 §10 先詢問。
-- 刪除既有資料產物或檔案。例外（皆限範圍內、有路徑斷言、完成且有產出後才清空）：
-  - [2] `raw/<version>/`；[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）。
-  - [4] `cleaned/<version>/`；[5] `chunks/<version>/`（2026-10-29 授權）。
-  - [6] `embeddings/<version>/`（2026-11-05 授權）。
+- 刪除既有資料產物或檔案。例外：
+  - [2]～[6] 重建自己擁有的版本子樹，範圍限定該版本子樹、有路徑斷言、處理完成且有產出後才清空：[2] `raw/<version>/`；[3] `extracted/<version>/` 與 `extracted_readable/<version>/`（2026-10-24 授權）；[4] `cleaned/<version>/`、[5] `chunks/<version>/`（2026-10-29 授權）；[6] `embeddings/<version>/`（2026-11-05 授權）。
   - [7]（2026-11-07 授權）：可刪除 PostgreSQL rag 兩表中該 version 的資料；模式（`update`／`rebuild`）由使用者確認後明確傳入、單一交易、通過目標資料庫斷言、限該 version，不得 DROP／TRUNCATE（`docs/06_index.md` D5、D5-1）。
   - `.agent-workspace/workers/worker_<目的>/`（2026-11-08 授權）：工作串合併或驗收且整併完成後可刪；路徑須是 `.agent-workspace/workers/` 的直接子目錄、名稱符合 `^worker_[a-z]+(_[a-z]+)*$`、未被 git 追蹤、整併清單已完成（§15.1）。
   - 其他階段如需比照，須另行授權。
@@ -116,7 +116,7 @@
 - 定義標示「待定」或「擱置」的項目（如 [6] embedding 輸入格式、[7] schema）。
 - §9 的 Sensitive Operations；讀取環境變數、系統診斷、硬體狀態等敏感系統資訊。
 
-**絕不**：為「待定」或「擱置」項目虛構細節（其餘禁止項見 §3.2、§9、§16）。
+**絕不**：為「待定」或「擱置」項目虛構細節。
 
 ## 11. Task Start Protocol
 
@@ -154,17 +154,15 @@
 
 ## 15. Handoff Protocol
 
-重要階段完成時：重大架構決策同步更新模塊文件、必要時 `ARCHITECTURE.md`，與 `README.md` 專案狀態；依 §17 回報。
+重要階段完成時，同步更新 `README.md` 專案狀態（其餘文件同步見 §14），並依 §17 回報。
 
 ### 15.1 溝通區 `.agent-workspace/`
 
 - **性質**：本機過程文件區，不入版控，不得當作規則引用；衝突時以 `AGENTS.md`、`docs/` 為準。
-- **結構**：`BOARD.md`（看板）、`SUPERVISOR.md`（監督者接手說明）、`workers/worker_<目的>/` 下的 `TASK.md`（要求與驗收條件）、`STATUS.md`（進度）、`REPORT.md`（回報）、`REVIEW.md`（檢查結果）、`evidence/`（指令完整輸出；執行端檔名以 `report_` 開頭，檢查者以 `review_` 開頭）。
+- **結構**：`BOARD.md`、`SUPERVISOR.md`、`workers/worker_<目的>/` 下的 `TASK.md`、`STATUS.md`、`REPORT.md`、`REVIEW.md`、`evidence/`（指令完整輸出；執行端檔名以 `report_` 開頭，檢查者以 `review_` 開頭）。
 - **命名**：資料夾為 `worker_` 加目的（小寫英文與底線，不放數字）；一個名稱一個工作串，計畫、實作、檢查都在同一資料夾；同一時間每個角色只有一個存活對話。
 - **單一寫入者**：`BOARD.md`、`SUPERVISOR.md`、`TASK.md` 由監督者寫；`STATUS.md`、`REPORT.md` 由執行端寫；`REVIEW.md` 由檢查者寫；每個檔案只有一方可寫。
 - **有效性**：`TASK.md`、`STATUS.md`、`REPORT.md`、`REVIEW.md` 開頭有 `task_id`、`round`、`base_commit`；與 `TASK.md` 不符即舊資料。`REPORT.md` 另記完成 commit；`REVIEW.md` 另記 `checked_commit`，結果只對該 commit 有效。
-- **驗收條件**：`TASK.md` 以編號列出，盡可能寫成可重跑的指令與預期結果；`REPORT.md`／`REVIEW.md` 逐條列出實際執行的指令、結束碼與輸出摘要（完整輸出放 `evidence/`），未執行者標明。
-- **多個對象**：不在同一檔案放給不同工作串的條目；拆分時寫入集合相同者合併為一個任務，做事的人不同者分開，前一步結果決定下一步設計者標示依賴。
 - **內容限制**：不得出現密碼、完整連線 URL 或 `.env` 的內容。
 - **寫入鎖**：修改 repo 的任務（`modify-repo`）同一時間只能有一個，由 `BOARD.md` 標明；唯讀任務可平行。
 - **淘汰**：工作串合併或驗收後，先完成整併清單（決策進 `docs/`、值得保留的數字與證據進對應文件、規則與教訓進 `AGENTS.md`），全部有去處才可刪除該目錄並從 `BOARD.md` 移除；由執行端或使用者刪除，監督者不刪除。
@@ -177,4 +175,4 @@
 
 ## 17. Completion Report
 
-完成任務後回報：**Changed**（實際修改的檔案）、**Validation**（實際執行的驗證與結果）、**Not Verified**（未執行的驗證）、**Risks**（仍存在的問題）、**Decisions Needed**（需使用者決定的事項）。
+完成任務後回報至少包含：**Changed**（實際修改的檔案）、**Validation**（實際執行的驗證與結果）、**Not Verified**（未執行的驗證）、**Risks**（仍存在的問題）、**Decisions Needed**（需使用者決定的事項）。
