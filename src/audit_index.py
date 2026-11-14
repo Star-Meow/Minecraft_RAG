@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import numpy as np
+from pgvector import Vector
 
 SRC_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC_DIR))
@@ -77,6 +78,10 @@ def mask(text: str) -> str:
     return mask_secrets(text, SECRETS)
 
 
+class VectorTypeError(TypeError):
+    """embedding 欄位讀回的不是 pgvector 的 Vector（例如 vector loader 未註冊而讀到 str）；訊息為實際型別名稱。"""
+
+
 def scalar(cur: Any, sql: str, params: tuple = ()) -> Any:
     cur.execute(sql, params)
     return cur.fetchone()[0]
@@ -90,6 +95,8 @@ def db_rows(cur: Any, table: str, columns: list[str], key: str, version: str | N
     for values in cur.fetchall():
         row = dict(zip(columns, values))
         if "embedding" in row:
+            if not isinstance(row["embedding"], Vector):
+                raise VectorTypeError(type(row["embedding"]).__name__)
             row["embedding"] = row["embedding"].to_numpy()
         rows.append(row)
     return rows
@@ -155,7 +162,6 @@ def schema_problems(cur: Any, table: str) -> list[str]:
 def main() -> int:
     import psycopg
     from dotenv import load_dotenv
-    from pgvector import Vector
     from pgvector.psycopg.vector import register_vector_info
     from psycopg.types import TypeInfo
 
@@ -204,77 +210,91 @@ def main() -> int:
             LOG.add("A3", "兩表 schema 與外鍵（NO ACTION）、CHECK、索引核對", not problems, "；".join(problems)[:300])
             if problems:
                 return finish(intro)
+            # psycopg 3 的 cursor 在建立時複製連線當下的 adapters：註冊 vector 之後必須另開 cursor，
+            # 舊的 cur 讀到的 embedding 會是字串。A4 以後（含讀向量的 A5、A10、A11）都在新 cursor 上執行。
             register_vector_info(conn, TypeInfo.fetch(conn, "public.vector"))
+            with conn.cursor() as cur:
+                version =json.loads((PROJECT_ROOT / "sources.json").read_text(encoding="utf-8"))["version"]
+                p_path, c_path, e_path = artifact_paths(version)
+                P, E = read_jsonl(p_path), read_jsonl(e_path)
+                Crows = [{k: e[k] for k in CHILD_NAMES} for e in E]
+                pair = (E[0]["model_name"], E[0]["model_revision"])
+                intro.append(f"version {version}；產物 parents {len(P)}、children {len(Crows)}")
 
-            version = json.loads((PROJECT_ROOT / "sources.json").read_text(encoding="utf-8"))["version"]
-            p_path, c_path, e_path = artifact_paths(version)
-            P, E = read_jsonl(p_path), read_jsonl(e_path)
-            Crows = [{k: e[k] for k in CHILD_NAMES} for e in E]
-            pair = (E[0]["model_name"], E[0]["model_revision"])
-            intro.append(f"version {version}；產物 parents {len(P)}、children {len(Crows)}")
+                # A4：筆數
+                n_p = scalar(cur, "SELECT count(*) FROM rag.parents WHERE version = %s", (version,))
+                n_c = scalar(cur, "SELECT count(*) FROM rag.children WHERE version = %s", (version,))
+                t_p, t_c = scalar(cur, "SELECT count(*) FROM rag.parents"), scalar(cur, "SELECT count(*) FROM rag.children")
+                LOG.add("A4", "筆數等於產物即時計算（不硬寫）", (n_p, n_c) == (len(P), len(Crows)),
+                        f"parents {n_p}/{len(P)}、children {n_c}/{len(Crows)}；全表 {t_p}、{t_c}")
+                if (t_p, t_c) != (n_p, n_c):
+                    LOG.note(f"全表列數（{t_p}、{t_c}）多於 version {version} 的列數：資料庫內另有其他 version，指紋以 version 範圍為準")
 
-            # A4：筆數
-            n_p = scalar(cur, "SELECT count(*) FROM rag.parents WHERE version = %s", (version,))
-            n_c = scalar(cur, "SELECT count(*) FROM rag.children WHERE version = %s", (version,))
-            t_p, t_c = scalar(cur, "SELECT count(*) FROM rag.parents"), scalar(cur, "SELECT count(*) FROM rag.children")
-            LOG.add("A4", "筆數等於產物即時計算（不硬寫）", (n_p, n_c) == (len(P), len(Crows)),
-                    f"parents {n_p}/{len(P)}、children {n_c}/{len(Crows)}；全表 {t_p}、{t_c}")
-            if (t_p, t_c) != (n_p, n_c):
-                LOG.note(f"全表列數（{t_p}、{t_c}）多於 version {version} 的列數：資料庫內另有其他 version，指紋以 version 範圍為準")
-
-            # A5：指紋
-            prows = db_rows(cur, "parents", PARENT_NAMES, "parent_id", version)
-            crows = db_rows(cur, "children", CHILD_NAMES, "chunk_id", version)
-            fp_db = (fingerprint(prows, PARENT_FP_COLUMNS, "parent_id", True), fingerprint(crows, CHILD_FP_COLUMNS, "chunk_id", True))
-            fp_art = (fingerprint(P, PARENT_FP_COLUMNS, "parent_id"), fingerprint(Crows, CHILD_FP_COLUMNS, "chunk_id"))
-            LOG.add("A5", "內容指紋：資料庫端（該 version）對產物端（parents、children）", fp_db == fp_art,
-                    f"parents {fp_db[0][:16]} / {fp_art[0][:16]}；children {fp_db[1][:16]} / {fp_art[1][:16]}")
-            # A6：model 組
-            cur.execute("SELECT count(DISTINCT (model_name, model_revision)), min(model_name), min(model_revision), "
-                        "bool_and(model_name <> '' AND model_revision <> '') FROM rag.children")
-            n, name, rev, nonempty = cur.fetchone()
-            LOG.add("A6", "全表只有一組非空 (model_name, model_revision)，且等於向量檔的唯一組", n == 1 and bool(nonempty) and (name, rev) == pair, f"組數 {n}")
-            # A7：完整性
-            orphans = scalar(cur, "SELECT count(*) FROM rag.children c LEFT JOIN rag.parents p ON p.parent_id = c.parent_id WHERE p.parent_id IS NULL")
-            childless = scalar(cur, "SELECT count(*) FROM rag.parents p WHERE NOT EXISTS (SELECT 1 FROM rag.children c WHERE c.parent_id = p.parent_id)")
-            sub = scalar(cur, "SELECT count(*) FROM rag.children c JOIN rag.parents p ON p.parent_id = c.parent_id WHERE position(c.text in p.text) > 0")
-            LOG.add("A7", "孤兒 child 0、無 child 的 parent 0、child.text 皆為 parent.text 的子字串",
-                    (orphans, childless, sub) == (0, 0, t_c), f"孤兒 {orphans}、無 child 的 parent {childless}、子字串 {sub}/{t_c}")
-            # A8：version
-            versions = sorted(r[0] for r in (cur.execute("SELECT DISTINCT version FROM rag.parents UNION SELECT DISTINCT version FROM rag.children") or cur).fetchall())
-            LOG.add("A8", "資料庫內的 version 單一且等於 sources.json 的值", versions == [version], f"{versions}")
-            # A9：text 往返
-            bad = 0
-            for table, rows, key in (("parents", P, "parent_id"), ("children", Crows, "chunk_id")):
-                cur.execute(f"SELECT {key}, text, length(text), octet_length(text) FROM rag.{table} WHERE version = %s", (version,))
-                got = {r[0]: r[1:] for r in cur.fetchall()}
-                bad += sum(1 for r in rows if got.get(r[key]) != (r["text"], len(r["text"]), len(r["text"].encode("utf-8"))))
-            LOG.add("A9", "text 往返：內容、字元長度、位元組長度逐列相等", bad == 0, f"不符 {bad} 列")
-            # A10：向量往返
-            got_v = {r["chunk_id"]: r["embedding"] for r in crows}
-            bad = sum(1 for r in Crows if r["chunk_id"] not in got_v or got_v[r["chunk_id"]].astype("<f4").tobytes() != f32_bytes(r["embedding"]))
-            LOG.add("A10", "向量往返（float32 位元組相等，全部 child）", bad == 0, f"不符 {bad}/{len(Crows)}")
-            # A11：最近鄰
-            ids = [r["chunk_id"] for r in Crows]
-            D = cosine_distance_matrix(np.array([r["embedding"] for r in Crows]), np.array([r["embedding"] for r in Crows]))
-            bad_top = bad_rank = 0
-            max_dev = 0.0
-            for i, r in enumerate(Crows):
-                cur.execute("SELECT chunk_id, embedding OPERATOR(public.<=>) %s AS d FROM rag.children WHERE version = %s ORDER BY d LIMIT %s",
-                            (Vector(f32(r["embedding"])), version, NN_TOP_K))
-                got = cur.fetchall()
-                if ids.index(got[0][0]) not in tie_set(D[i]):
-                    bad_top += 1
-                ref = np.sort(D[i])[:NN_TOP_K]
-                devs = [abs(float(gd) - float(rd)) for (_, gd), rd in zip(got, ref)]
-                max_dev = max(max_dev, *devs)
-                bad_rank += any(d > NN_TOLERANCE for d in devs)
-            cur.execute("SELECT indexdef FROM pg_indexes WHERE schemaname = 'rag' AND tablename = 'children'")
-            defs = " ".join(r[0].lower() for r in cur.fetchall())
-            LOG.add("A11", f"最近鄰排序（同 V5；{D6_SENTENCE}）且沒有向量索引", bad_top == 0 and bad_rank == 0 and "hnsw" not in defs and "ivfflat" not in defs,
-                    f"{len(Crows)} 筆查詢；第一名不在並列組 {bad_top}、距離超出容差 {bad_rank}；最大距離偏差 {max_dev:.3g}；容差 {NN_TOLERANCE:g}")
-            if max_dev > NN_ATTENTION:
-                LOG.note(f"A11 最大距離偏差 {max_dev:.3g} 超過 {NN_ATTENTION:g}：須回報使用者，不得自行放寬容差")
+                # A5：指紋
+                vector_type_err = ""
+                try:
+                    prows = db_rows(cur, "parents", PARENT_NAMES, "parent_id", version)
+                    crows = db_rows(cur, "children", CHILD_NAMES, "chunk_id", version)
+                except VectorTypeError as exc:
+                    vector_type_err = f"embedding 讀回型別 {exc}，預期 pgvector Vector（vector loader 未生效）"
+                    crows = []
+                if vector_type_err:
+                    LOG.add("A5", "內容指紋：資料庫端（該 version）對產物端（parents、children）", False, vector_type_err)
+                else:
+                    fp_db = (fingerprint(prows, PARENT_FP_COLUMNS, "parent_id", True), fingerprint(crows, CHILD_FP_COLUMNS, "chunk_id", True))
+                    fp_art = (fingerprint(P, PARENT_FP_COLUMNS, "parent_id"), fingerprint(Crows, CHILD_FP_COLUMNS, "chunk_id"))
+                    LOG.add("A5", "內容指紋：資料庫端（該 version）對產物端（parents、children）", fp_db == fp_art,
+                            f"parents {fp_db[0][:16]} / {fp_art[0][:16]}；children {fp_db[1][:16]} / {fp_art[1][:16]}")
+                # A6：model 組
+                cur.execute("SELECT count(DISTINCT (model_name, model_revision)), min(model_name), min(model_revision), "
+                            "bool_and(model_name <> '' AND model_revision <> '') FROM rag.children")
+                n, name, rev, nonempty = cur.fetchone()
+                LOG.add("A6", "全表只有一組非空 (model_name, model_revision)，且等於向量檔的唯一組", n == 1 and bool(nonempty) and (name, rev) == pair, f"組數 {n}")
+                # A7：完整性
+                orphans = scalar(cur, "SELECT count(*) FROM rag.children c LEFT JOIN rag.parents p ON p.parent_id = c.parent_id WHERE p.parent_id IS NULL")
+                childless = scalar(cur, "SELECT count(*) FROM rag.parents p WHERE NOT EXISTS (SELECT 1 FROM rag.children c WHERE c.parent_id = p.parent_id)")
+                sub = scalar(cur, "SELECT count(*) FROM rag.children c JOIN rag.parents p ON p.parent_id = c.parent_id WHERE position(c.text in p.text) > 0")
+                LOG.add("A7", "孤兒 child 0、無 child 的 parent 0、child.text 皆為 parent.text 的子字串",
+                        (orphans, childless, sub) == (0, 0, t_c), f"孤兒 {orphans}、無 child 的 parent {childless}、子字串 {sub}/{t_c}")
+                # A8：version
+                versions = sorted(r[0] for r in (cur.execute("SELECT DISTINCT version FROM rag.parents UNION SELECT DISTINCT version FROM rag.children") or cur).fetchall())
+                LOG.add("A8", "資料庫內的 version 單一且等於 sources.json 的值", versions == [version], f"{versions}")
+                # A9：text 往返
+                bad = 0
+                for table, rows, key in (("parents", P, "parent_id"), ("children", Crows, "chunk_id")):
+                    cur.execute(f"SELECT {key}, text, length(text), octet_length(text) FROM rag.{table} WHERE version = %s", (version,))
+                    got = {r[0]: r[1:] for r in cur.fetchall()}
+                    bad += sum(1 for r in rows if got.get(r[key]) != (r["text"], len(r["text"]), len(r["text"].encode("utf-8"))))
+                LOG.add("A9", "text 往返：內容、字元長度、位元組長度逐列相等", bad == 0, f"不符 {bad} 列")
+                # A10：向量往返
+                got_v = {r["chunk_id"]: r["embedding"] for r in crows}
+                bad = sum(1 for r in Crows if r["chunk_id"] not in got_v or got_v[r["chunk_id"]].astype("<f4").tobytes() != f32_bytes(r["embedding"]))
+                LOG.add("A10", "向量往返（float32 位元組相等，全部 child）", bad == 0 and not vector_type_err,
+                        vector_type_err or f"不符 {bad}/{len(Crows)}")
+                # A11：最近鄰
+                if vector_type_err:
+                    LOG.add("A11", f"最近鄰排序（同 V5；{D6_SENTENCE}）且沒有向量索引", False, "未執行：" + vector_type_err)
+                else:
+                    ids = [r["chunk_id"] for r in Crows]
+                    D = cosine_distance_matrix(np.array([r["embedding"] for r in Crows]), np.array([r["embedding"] for r in Crows]))
+                    bad_top = bad_rank = 0
+                    max_dev = 0.0
+                    for i, r in enumerate(Crows):
+                        cur.execute("SELECT chunk_id, embedding OPERATOR(public.<=>) %s AS d FROM rag.children WHERE version = %s ORDER BY d LIMIT %s",
+                                    (Vector(f32(r["embedding"])), version, NN_TOP_K))
+                        got = cur.fetchall()
+                        if ids.index(got[0][0]) not in tie_set(D[i]):
+                            bad_top += 1
+                        ref = np.sort(D[i])[:NN_TOP_K]
+                        devs = [abs(float(gd) - float(rd)) for (_, gd), rd in zip(got, ref)]
+                        max_dev = max(max_dev, *devs)
+                        bad_rank += any(d > NN_TOLERANCE for d in devs)
+                    cur.execute("SELECT indexdef FROM pg_indexes WHERE schemaname = 'rag' AND tablename = 'children'")
+                    defs = " ".join(r[0].lower() for r in cur.fetchall())
+                    LOG.add("A11", f"最近鄰排序（同 V5；{D6_SENTENCE}）且沒有向量索引", bad_top == 0 and bad_rank == 0 and "hnsw" not in defs and "ivfflat" not in defs,
+                            f"{len(Crows)} 筆查詢；第一名不在並列組 {bad_top}、距離超出容差 {bad_rank}；最大距離偏差 {max_dev:.3g}；容差 {NN_TOLERANCE:g}")
+                    if max_dev > NN_ATTENTION:
+                        LOG.note(f"A11 最大距離偏差 {max_dev:.3g} 超過 {NN_ATTENTION:g}：須回報使用者，不得自行放寬容差")
         # A12：腳本自身
         own = Path(__file__).read_text(encoding="utf-8")
         hits = sorted(set(WRITE_RE.findall(own)))
@@ -284,6 +304,8 @@ def main() -> int:
         conn.rollback()
     except psycopg.Error as exc:
         LOG.add("A12", "核對過程發生資料庫錯誤", False, f"{type(exc).__name__}：{mask(first_line(str(exc)))}")
+    except Exception as exc:   # noqa: BLE001（未預期的例外：不再送任何 SQL，仍寫出報告並以 1 結束）
+        LOG.add("中止", "核對中止（未預期的例外）", False, f"{type(exc).__name__}：{mask(first_line(str(exc)))}")
     finally:
         conn.close()
     return finish(intro)
