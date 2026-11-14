@@ -15,6 +15,8 @@
 | `src/fetch_pages.py` 有失敗頁卻回傳 0 | [T7](#t7-抓取失敗時的結束碼與契約不符) |
 | 重新抓取後頁數、跳過頁數、清理結果大幅改變，或出現 `other/.html.md` | [T8](#t8-站台建置方式改變內容未更新) |
 | 抽取結果的段落與清單黏成一行，或混入提示框的物品名稱 | [T9](#t9-trafilatura-把段落與清單黏成一行) |
+| 在 Git Bash 以 heredoc 執行 Python 時 `
+` 或反斜線被改掉，或 `/tmp` 下的檔案 Python 找不到 | [T10](#t10-git-bash-的-heredoc-與-tmp-路徑) |
 
 ## T1 側邊欄爬取只抓到 39/124 頁
 
@@ -98,3 +100,28 @@
   - 根因實驗：連結換成純文字後，`devices` 1 → 8 行、`quartz_tools` 1 → 13 行；短頁退回 baseline 而黏行。
   - 結果：黏成單行的頁 21 → 0（剩 17 頁單行皆為 HTML 只有一段文字的頁）；清單項目 404 → 624（含 3D 場景說明 213 條，213/213 保留）；提示框雜訊 12 頁 → 0；內容涵蓋率 99.1%（少掉的字皆為配方標籤）；`title`／`source`／`hostname`／`http_status`、`recipes` 與整理前 119/119 相同。
   - trafilatura markdown 模式在新 HTML 重測：單行 21、無 H1 22、多 H1 11、提示框雜訊 15，不可行（見 [02_extract.md](02_extract.md) 的否決的方案）。
+
+## T10 Git Bash 的 heredoc 與 /tmp 路徑
+
+- **日期**：2026-11-05（由已刪除的交接文件移入）
+- **現象**：在 Windows 的 Git Bash 以 heredoc 把 Python 程式碼傳給直譯器時，`
+` 與反斜線容易被 shell 改掉；寫到 `/tmp` 的檔案，Windows 版 Python 以同一路徑找不到。
+- **根因**：heredoc 的內容會先經過 shell 處理；Git Bash 的 `/tmp` 與 Windows 版 Python 看到的路徑不同。
+- **處置**：把程式碼寫成檔案再執行，不用 heredoc；暫存檔放在 Agent 工具的暫存目錄或專案內，不用 `/tmp`。
+- **證據**：未留存（原記錄只有現象與處置）。
+
+## T11 psycopg 3 讀回 vector 變成字串
+
+- **日期**：2026-11-14
+- **現象**：`audit_index.py` 在 A5 崩潰：`embedding` 欄位讀回的是字串，不是 `Vector`。
+- **根因**：psycopg 3 的 cursor 在建立時複製連線當下的 adapter；`register_vector_info` 之後才建立的 cursor 才讀得到 `Vector`，之前建立的 cursor 仍用舊 adapter。
+- **處置**：讀向量的 cursor 在 `register_vector_info` 之後另行建立；讀到非 `Vector` 時以型別錯誤回報型別名稱，不靜默通過。
+- **證據**：commit b24b17b（`audit_index.py`）。
+
+## T12 子行程輸出在 PowerShell 解碼失敗
+
+- **日期**：2026-11-14
+- **現象**：`verify_index.py` 的子行程案例（V15）在 PowerShell 下因編碼錯誤崩潰，報告未寫出。
+- **根因**：父行程以 cp950 解碼子行程輸出的 UTF-8 內容。
+- **處置**：子行程統一設 `PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`。驗收時不要在外層 shell 預先設定這些變數，以免掩蓋缺陷。
+- **證據**：commit 6bfe1e7（`verify_index.py`）。

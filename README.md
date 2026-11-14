@@ -36,7 +36,7 @@ flowchart TD
     E --> C["清理<br>去噪 + 標題層級正規化"]
     C --> K["切分<br>子母分層"]
     K -- child --> M["向量化<br>BGE-M3"]
-    M -- child 向量 --> I["入庫<br>PostgreSQL + pgvector（擱置）"]
+    M -- child 向量 --> I["入庫<br>PostgreSQL + pgvector"]
     K -- parent --> I
     I -.範圍外.-> R["Retrieval + Streamlit UI<br>英文檢索 → 繁中回答 + 來源"]
 ```
@@ -95,6 +95,26 @@ python src/clean_pages.py
 python src/chunk_pages.py
 ```
 
+```bash
+python src/embed_chunks.py
+```
+
+入庫（[7]）：
+
+```bash
+python src/verify_index.py
+```
+
+```bash
+python src/index_chunks.py --mode <update|rebuild>
+```
+
+```bash
+python src/audit_index.py
+```
+
+其中 `verify_index.py` 只連測試庫；`index_chunks.py --mode {update,rebuild}` 寫入正式庫；`audit_index.py` 唯讀核對正式庫。
+
 | 指令 | 模塊 | 輸出 |
 | --- | --- | --- |
 | `src/fetch_pages.py` | 來源設定與抓取 | `data/raw/` |
@@ -102,11 +122,14 @@ python src/chunk_pages.py
 | `src/clean_pages.py` | 清理 | `data/processed/cleaned/`、`reports/cleaning_report.md` |
 | `src/chunk_pages.py` | 切分 | `data/processed/chunks/`、`reports/chunking_report.md` |
 | `src/embed_chunks.py` | 向量化 | `data/processed/embeddings/` |
+| `src/index_chunks.py` | 入庫 | PostgreSQL（正式庫）、`reports/index_report.md` |
+| `src/verify_index.py` | 入庫驗證（測試庫） | `reports/verify_index_report.md` |
+| `src/audit_index.py` | 入庫核對（正式庫，唯讀） | `reports/audit_index_report.md` |
 
 - 抓取失敗的頁面不會重試，會記錄在 `_manifest.json`；人工查驗後重新執行即可。
 - 切分首次執行時會從 Hugging Face 下載 BGE-M3 的 tokenizer 檔（不含模型權重）。
 - 向量化使用的 BGE-M3 模型約 2.3 GB，首次執行時才會從 Hugging Face 下載；向量化需要 NVIDIA GPU。
-- 入庫目前擱置。
+- 入庫需要：Docker 容器已啟動、`vector` 擴充已建立、`.env` 已有 `DATABASE_URL`／`DATABASE_URL_TEST`。`--mode` 須自行確認（`update` 或 `rebuild`），細節見 `docs/06_index.md`。
 
 ### 金鑰
 
@@ -114,7 +137,7 @@ LLM 的 API key 一律透過 `.env` 讀取（範本見 `.env.example`），不�
 
 ## 專案狀態
 
-> 開發期間暫時保留，專案完成後移除。最後更新：2026-10-29；實際狀態以程式碼與 Git 為準。
+> 開發期間暫時保留，專案完成後移除。最後更新：2026-11-14；實際狀態以程式碼與 Git 為準。
 
 | 模塊 | 狀態 |
 | --- | --- |
@@ -123,7 +146,7 @@ LLM 的 API key 一律透過 `.env` 讀取（範本見 `.env.example`），不�
 | 清理 | 已實作：119 頁輸出（0 頁跳過）；69 頁帶章節標題、85 頁附配方 |
 | 切分 | 已實作：119 頁 → parent 387 個、child 466 個（parent ≤ 2048、child ≤ 256） |
 | 向量化 | 已完成：466 筆 child 向量（BGE-M3，1024 維，2026-11-05 驗收） |
-| 入庫 | 擱置：schema 待前面各模塊跑通後定義 |
+| 入庫 | 已實作：PostgreSQL + pgvector；2026-11-14 正式入庫（parents 387、children 466），核對通過 |
 
 ## 安全須知
 

@@ -1,0 +1,34 @@
+# [7] 入庫用的本機資料庫：PostgreSQL + pgvector（單容器、兩個 database）。
+# 所有 compose 指令一律從專案根目錄執行，變數來源是根目錄的 .env：
+#   docker compose --env-file .env -f infra/docker-compose.yml <子指令>
+# 本檔只含變數參照，不含任何密碼；實際值只放 .env（不入版控）。
+# 變數說明見根目錄 .env.example。
+# 必填變數缺漏時 Compose 會報錯並中止（訊息刻意使用英文，避免 Windows 終端機編碼問題）。
+
+name: minecraft-rag
+
+services:
+  db:
+    image: "pgvector/pgvector:${PGVECTOR_IMAGE_TAG:?set PGVECTOR_IMAGE_TAG in .env}"
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?set POSTGRES_USER in .env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: "${POSTGRES_DB:?set POSTGRES_DB in .env}"
+    ports:
+      # 只綁 loopback，不對外開放
+      - "127.0.0.1:${PGVECTOR_PORT:?set PGVECTOR_PORT in .env}:5432"
+    volumes:
+      # PG18 起映像的 VOLUME 為 /var/lib/postgresql（PG17 以下為 /var/lib/postgresql/data）。
+      # 換主版本時必須同步檢查這個掛載路徑。
+      - pgdata:/var/lib/postgresql
+      # init script 只在資料目錄為空的首次啟動時執行（建立測試庫）
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata:

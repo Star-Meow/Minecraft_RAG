@@ -7,3 +7,7 @@ trafilatura==2.2.0
 langchain-text-splitters==1.1.2
 sentence-transformers==6.1.0
 transformers==5.17.0
+psycopg[binary]==3.3.9
+pgvector==0.5.1
+python-dotenv==1.2.4
+numpy==2.5.3
