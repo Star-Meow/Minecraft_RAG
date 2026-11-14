@@ -109,3 +109,19 @@
 - **根因**：heredoc 的內容會先經過 shell 處理；Git Bash 的 `/tmp` 與 Windows 版 Python 看到的路徑不同。
 - **處置**：把程式碼寫成檔案再執行，不用 heredoc；暫存檔放在 Agent 工具的暫存目錄或專案內，不用 `/tmp`。
 - **證據**：未留存（原記錄只有現象與處置）。
+
+## T11 psycopg 3 讀回 vector 變成字串
+
+- **日期**：2026-11-14
+- **現象**：`audit_index.py` 在 A5 崩潰：`embedding` 欄位讀回的是字串，不是 `Vector`。
+- **根因**：psycopg 3 的 cursor 在建立時複製連線當下的 adapter；`register_vector_info` 之後才建立的 cursor 才讀得到 `Vector`，之前建立的 cursor 仍用舊 adapter。
+- **處置**：讀向量的 cursor 在 `register_vector_info` 之後另行建立；讀到非 `Vector` 時以型別錯誤回報型別名稱，不靜默通過。
+- **證據**：commit b24b17b（`audit_index.py`）。
+
+## T12 子行程輸出在 PowerShell 解碼失敗
+
+- **日期**：2026-11-14
+- **現象**：`verify_index.py` 的子行程案例（V15）在 PowerShell 下因編碼錯誤崩潰，報告未寫出。
+- **根因**：父行程以 cp950 解碼子行程輸出的 UTF-8 內容。
+- **處置**：子行程統一設 `PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`。驗收時不要在外層 shell 預先設定這些變數，以免掩蓋缺陷。
+- **證據**：commit 6bfe1e7（`verify_index.py`）。
