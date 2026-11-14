@@ -95,6 +95,10 @@ python src/clean_pages.py
 python src/chunk_pages.py
 ```
 
+```bash
+python src/embed_chunks.py
+```
+
 入庫（[7]）：
 
 ```bash
@@ -102,7 +106,7 @@ python src/verify_index.py
 ```
 
 ```bash
-python src/index_chunks.py --mode update
+python src/index_chunks.py --mode <update|rebuild>
 ```
 
 ```bash
@@ -118,6 +122,9 @@ python src/audit_index.py
 | `src/clean_pages.py` | 清理 | `data/processed/cleaned/`、`reports/cleaning_report.md` |
 | `src/chunk_pages.py` | 切分 | `data/processed/chunks/`、`reports/chunking_report.md` |
 | `src/embed_chunks.py` | 向量化 | `data/processed/embeddings/` |
+| `src/index_chunks.py` | 入庫 | PostgreSQL（正式庫）、`reports/index_report.md` |
+| `src/verify_index.py` | 入庫驗證（測試庫） | `reports/verify_index_report.md` |
+| `src/audit_index.py` | 入庫核對（正式庫，唯讀） | `reports/audit_index_report.md` |
 
 - 抓取失敗的頁面不會重試，會記錄在 `_manifest.json`；人工查驗後重新執行即可。
 - 切分首次執行時會從 Hugging Face 下載 BGE-M3 的 tokenizer 檔（不含模型權重）。

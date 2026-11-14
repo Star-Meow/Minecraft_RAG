@@ -4,7 +4,7 @@
 - 不 import index_chunks.py：URL 解析、斷言、schema 核對、指紋與暴力 cosine 都由本腳本（與
   index_check_utils.py 的純工具）自己計算。
 - 核對項目 A1～A12（計畫 §7.3）。結果寫入 reports/audit_index_report.md（單次、整份覆寫，不含密碼與完整 URL）。
-- 由使用者在 `index_chunks.py --mode ...` 完成後執行（會讀 .env）。
+- 在 `index_chunks.py --mode ...` 完成後，依 AGENTS.md §10 執行（會讀 .env）。
 - V5 只證明資料庫排序等於暴力計算，不證明檢索品質（D6）；A11 同。
 """
 

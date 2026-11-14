@@ -3,7 +3,7 @@
 > 職責：把 child 向量與 parent 文件寫入 PostgreSQL + pgvector。
 > 上一個階段：[向量化](05_embed.md)
 
-程式：`src/index_chunks.py`（已實作；索引類型與重跑策略見 §2.1 D1、D5，schema 見 §2.2）
+程式：`src/index_chunks.py`、`src/verify_index.py`、`src/audit_index.py`、`src/index_check_utils.py`（索引類型與重跑策略見 §2.1 D1、D5，schema 見 §2.2）
 
 ## 1. 輸入與輸出
 
@@ -128,7 +128,7 @@ docstore 模式是子母分層的標準做法（見 [04_chunk.md](04_chunk.md)�
 
 ## 5. 驗證方式
 
-驗證由獨立腳本執行，不寫在 `index_chunks.py` 內（程式不驗證自己）；會連線的指令一律由使用者執行（任何 Agent 不得讀 `.env`，D4）。
+驗證由獨立腳本執行，不寫在 `index_chunks.py` 內（程式不驗證自己）；`index_chunks.py --mode …` 由使用者確認模式後執行；`verify_index.py`、`audit_index.py` 依 AGENTS.md §10（任何 Agent 不得讀 `.env`，D4）。
 
 - **`python src/verify_index.py`**（只連測試庫，D5-2；`--offline` 只跑不讀 `.env`、不連線的項目）：
   - V1 測試庫斷言；V2 筆數（由產物即時計算）；V3 text 往返（內容、字元長度、位元組長度）；V4 純量欄位與欄位清單；V23 向量往返（float32 位元組相等）；V6 內容指紋（資料庫端對產物端）；V7 單一 model 組；

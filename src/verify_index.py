@@ -4,7 +4,7 @@
   write_rebuild，並為負向測試 import 受測對象 check_table_schema、evaluate_extension_version（計畫疑義 1）。
   其餘案例一律以子行程執行真正的 CLI（在沒有 .env 的暫存專案根副本內），不留測試後門。
 - URL 解析、指紋與暴力 cosine 都由本腳本（與 index_check_utils.py）自己計算。
-- 預設跑全部（V1～V23，需要 .env 與測試庫，由使用者執行）；--offline 只跑不讀 .env、不連線的項目：
+- 預設跑全部（V1～V23，需要 .env 與測試庫，依 AGENTS.md §10 執行）；--offline 只跑不讀 .env、不連線的項目：
   V13a（連線前即中止的負向案例）、V15、V17、V18、V19。
 - V5 只證明資料庫排序等於暴力計算，不證明檢索品質（D6）。
 """
