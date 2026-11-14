@@ -72,7 +72,7 @@
 | [4] 清理 | 規則只作用於正文；被排除的頁以報告為憑（`docs/03_clean.md`） |
 | [5] 切分 | 只讀 cleaned MD；以 BGE-M3 tokenizer 斷言上限；`source_url` 為空的頁不產出（`docs/04_chunk.md`） |
 | [6] Embedding | revision 鎖定，與輸入逐筆對應（`docs/05_embed.md`） |
-| [7] 入庫 | schema **擱置**（不得預先定義）；其餘已定（`docs/06_index.md` §2.1） |
+| [7] 入庫 | schema 已定（`docs/06_index.md` §2.2）；寫入模式（`update`／`rebuild`）須由使用者確認（§9、§10） |
 
 ## 7. Data Rules
 
@@ -107,14 +107,15 @@
 
 ## 10. Agent Decision Boundary
 
-**可直接做**：專案內讀取、搜尋；修改任務範圍內的程式碼與文件；重跑 [2]–[5]（[2] 會連網）；重跑 [6]，限模型已在本機快取。
+**可直接做**：專案內讀取、搜尋；修改任務範圍內的程式碼與文件；重跑 [2]–[5]（[2] 會連網）；重跑 [6]，限模型已在本機快取；執行 `src/verify_index.py`（只連測試庫）與 `src/audit_index.py`（唯讀核對正式庫）（2026-11-14 授權）。條件：不得讀取或印出 `.env`，不得執行會列出環境變數的指令；不得自行另寫連線查詢。
 
 **必須先問**：
 - 修改架構、管線契約、目錄結構或 §8 技術決策；新增或升級 dependency。
 - 下載模型或大型檔案（說明來源與大小）；修改 `sources.json`；刪除或搬移既有檔案。
 - 修改 [4] 清理規則：門檻、白名單的小幅調整須使用者同意並記錄裁定。
-- 定義標示「待定」或「擱置」的項目（如 [6] embedding 輸入格式、[7] schema）。
+- 定義標示「待定」或「擱置」的項目（如 [6] embedding 輸入格式）。
 - §9 的 Sensitive Operations；讀取環境變數、系統診斷、硬體狀態等敏感系統資訊。
+- `index_chunks.py --mode …` 寫入正式庫：須使用者在對話中明確同意並指定模式（`update`／`rebuild`）。
 
 **絕不**：為「待定」或「擱置」項目虛構細節。
 
@@ -136,7 +137,7 @@
 | Change | Validation | Acceptance Criteria |
 | --- | --- | --- |
 | [2]～[6] | `python src/<階段>.py`（`fetch_pages`、`extract_pages`、`clean_pages`、`chunk_pages`、`embed_chunks`） | 對應 `docs/01`～`05` 的「5. 驗證方式」 |
-| [7] Index | 待 schema 定義後補入 | 待定 |
+| [7] Index | `python src/verify_index.py`（測試庫）；`python src/audit_index.py`（正式庫，唯讀） | 對應 `docs/06_index.md` 的「5. 驗證方式」 |
 | Documentation | 人工核對 | 文內事實（路徑、檔名、規則引用）與實際一致；每個格式只在產出它的模塊文件定義一次；`ARCHITECTURE.md` 模塊地圖與模塊文件一致 |
 
 ## 14. Documentation Responsibilities

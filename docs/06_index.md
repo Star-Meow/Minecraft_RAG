@@ -3,7 +3,7 @@
 > 職責：把 child 向量與 parent 文件寫入 PostgreSQL + pgvector。
 > 上一個階段：[向量化](05_embed.md)
 
-程式：`src/index_chunks.py`（**尚未實作**；索引類型與重跑策略已定（見 §2.1 D1、D5），schema 擱置，不預先虛構）
+程式：`src/index_chunks.py`（已實作；索引類型與重跑策略見 §2.1 D1、D5，schema 見 §2.2）
 
 ## 1. 輸入與輸出
 
@@ -38,7 +38,7 @@
 - **D7**：使用者一次性手動執行 `CREATE EXTENSION IF NOT EXISTS vector;`，兩個庫各一次；程式啟動時檢查擴充存在與版本，缺少即清楚中止。版本規格（2026-11-07 使用者裁定）：`extversion >= 0.8.2`（避開 CVE-2026-3172，影響 pgvector 0.6.0–0.8.1 的平行 HNSW 建索引）。
 - **Docker**：個人專案，不做環境隔離：單一容器、兩個 database（`minecraft_rag`、`minecraft_rag_test`）；PG18；映像 `pgvector/pgvector:<固定標籤>`；只綁 `127.0.0.1:5433`；named volume 掛 `/var/lib/postgresql`；init script 只建測試庫，不建擴充；所有指令從專案根目錄執行 `docker compose --env-file .env -f infra/docker-compose.yml …`。細節（服務名稱 `db`、英文錯誤訊息、不設 restart policy、healthcheck 10s/5s/5/10s）2026-11-07 使用者裁定接受。
 - **版控流程**（2026-11-07 使用者裁定）：[7] 全部完成後才 push 與開 PR；在此之前只做本機 commit 留存紀錄，方便回溯。
-- **schema 已知的必要條件**（不是完整 schema；欄位定義仍擱置）：
+- **schema 已知的必要條件**（不是完整 schema；欄位定義見 §2.2）：
   - parents、children 兩表都必須有 `version` 欄位（D5 的所有刪除都以 version 為範圍）。
   - 必須能查出每列的 `model_name`、`model_revision` 與向量維度（D5 防呆需要）。
   - 唯一鍵用 `parent_id`／`chunk_id`；不可對 `text` 設 UNIQUE。
@@ -122,7 +122,7 @@ docstore 模式是子母分層的標準做法（見 [04_chunk.md](04_chunk.md)�
 
 | 事項 | 狀態 |
 | --- | --- |
-| schema（欄位、型別、約束） | 擱置（已知必要條件見 §2.1「schema 已知的必要條件」） |
+| schema（欄位、型別、約束） | 已定：見 §2.2 |
 | 入庫方式 | 已定：兩表、精確掃描（D1）；重跑分 `update`／`rebuild` 兩種模式，由使用者明確指定（D5）；寫入前執行目標資料庫斷言（D5-1） |
 | 索引類型 | 已定：不建向量索引（D1），日後依效果新增 |
 
@@ -136,4 +136,5 @@ docstore 模式是子母分層的標準做法（見 [04_chunk.md](04_chunk.md)�
   - V8 交易回滾（輸入 1023 維、於第 N 個語句注入例外，兩種模式）；V9 update 新增／更新／刪除筆數；V10 冪等；V11 update 防呆；V12 外鍵與刪除順序；V20 DELETE 範圍限於 version，及 rebuild 檢查其他 version 的 model 組；V22 空表 update；
   - V13 連線前即中止的負向案例（以子行程執行 CLI，spy 證明沒有連線）；V14 密碼遮罩；V15 無模型載入；V16 報告格式；V17 無 DROP／TRUNCATE／ALTER／CASCADE；V18 無測試後門；V19 入庫前驗證先於連線；V21 schema 不符與擴充版本（函式層級）。
 - **`python src/index_chunks.py --mode update|rebuild`** 後執行 **`python src/audit_index.py`**（只連正式庫，唯讀）：A1～A12：斷言與唯讀、擴充版本、schema 與外鍵、筆數、內容指紋、單一 model 組、孤兒與子字串、version、text 往返、向量往返、最近鄰排序（同 V5）、腳本無寫入關鍵字。
+- 實測（2026-11-14）：測試庫完整驗證 79 項、0 項不通過，V5 最大距離偏差 2.8e-07；正式庫 `audit_index.py` 12 項、0 項不通過。
 - `reports/index_report.md`：欄位齊全，不含密碼或完整 URL。

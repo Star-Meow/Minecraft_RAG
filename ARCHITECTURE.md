@@ -27,7 +27,7 @@
                         ┌──────────┐            child + 向量                  ┌──────────┐
                         │   入庫    │ ◀────────────────────────────────────── │  向量化   │
                         └──────────┘                                         └──────────┘
-                     PostgreSQL + pgvector（尚未實作）
+                     PostgreSQL + pgvector
 ```
 
 抽取：先整理 HTML 輸入，再由 trafilatura 抽取主文。
@@ -41,7 +41,7 @@
 | 清理 | `docs/03_clean.md` | `src/clean_pages.py` | extracted JSON | `data/processed/cleaned/` |
 | 切分 | `docs/04_chunk.md` | `src/chunk_pages.py` | cleaned MD | `data/processed/chunks/` |
 | 向量化 | `docs/05_embed.md` | `src/embed_chunks.py` | child chunks | `data/processed/embeddings/` |
-| 入庫 | `docs/06_index.md` | `src/index_chunks.py`（尚未實作） | child 向量、parent 文件 | PostgreSQL + pgvector |
+| 入庫 | `docs/06_index.md` | `src/index_chunks.py`、`src/verify_index.py`、`src/audit_index.py`、`src/index_check_utils.py` | child 向量、parent 文件 | PostgreSQL + pgvector |
 
 其他：各模塊的單次報告放在 `reports/`（不入版控）；評估資料預留在 `data/evaluation/`（範圍外）；疑難排解見 `docs/07_troubleshooting.md`。
 
