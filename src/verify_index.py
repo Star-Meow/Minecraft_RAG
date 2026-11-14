@@ -55,6 +55,23 @@ TEMP_ROOTS: list[Path] = []
 LOG = ResultLog()
 
 
+def sub_env(extra: Optional[dict] = None, strip_db: bool = True) -> dict:
+    """所有子行程共用的環境：強制 UTF-8 輸出（避免 PowerShell 下的 cp950）；預設移除 PG* 與資料庫 URL 變數。"""
+    env = {k: v for k, v in os.environ.items()
+           if not strip_db or not (k.startswith("PG") or k in ("DATABASE_URL", "DATABASE_URL_TEST"))}
+    env.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    env.update(extra or {})
+    return env
+
+
+def run_sub(cmd: list[str], env: dict, timeout: int = 300) -> subprocess.CompletedProcess:
+    """所有 subprocess.run 的唯一入口：UTF-8 解碼、無法解碼的位元組以 ? 取代（不崩潰）；stdout／stderr 保證是 str。"""
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env=env, timeout=timeout)
+    proc.stdout, proc.stderr = proc.stdout or "", proc.stderr or ""
+    return proc
+
+
 # ---------------------------------------------------------------------------
 # 工具
 # ---------------------------------------------------------------------------
@@ -127,15 +144,10 @@ class TempRoot:
         write_jsonl(e, embeddings)
 
     def run(self, args: list[str], env_extra: Optional[dict] = None) -> subprocess.CompletedProcess:
-        env = {k: v for k, v in os.environ.items()
-               if not k.startswith("PG") and k not in ("DATABASE_URL", "DATABASE_URL_TEST")}
-        env.update({"PYTHONPATH": str(self.spy_dir), "INDEX_SPY_FILE": str(self.spy_file),
-                    "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
-        env.update(env_extra or {})
+        env = sub_env({"PYTHONPATH": str(self.spy_dir), "INDEX_SPY_FILE": str(self.spy_file), **(env_extra or {})})
         if self.spy_file.exists():
             self.spy_file.unlink()
-        proc = subprocess.run([sys.executable, str(self.root / "src" / "index_chunks.py")] + args,
-                              capture_output=True, text=True, encoding="utf-8", env=env, timeout=300)
+        proc = run_sub([sys.executable, str(self.root / "src" / "index_chunks.py")] + args, env)
         CAPTURED.append(proc.stdout + "\n" + proc.stderr)
         return proc
 
@@ -234,10 +246,9 @@ def run_v13a(version: str, P: list[dict], C: list[dict], E: list[dict]) -> None:
     try:
         root.set_artifacts(P, C, E)
         # spy 的正向對照：用會立刻被 libpq 拒絕的 conninfo（不產生任何網路連線）
-        probe = subprocess.run([sys.executable, "-c", "import psycopg\ntry:\n    psycopg.connect('badkeyxyz=1')\n"
-                                "except Exception:\n    pass"], capture_output=True, text=True,
-                               env={**os.environ, "PYTHONPATH": str(root.spy_dir),
-                                    "INDEX_SPY_FILE": str(root.spy_file)})
+        probe = run_sub([sys.executable, "-c", "import psycopg\ntry:\n    psycopg.connect('badkeyxyz=1')\n"
+                         "except Exception:\n    pass"],
+                        sub_env({"PYTHONPATH": str(root.spy_dir), "INDEX_SPY_FILE": str(root.spy_file)}, strip_db=False))
         LOG.add("V13a", "spy 正向對照（呼叫 psycopg.connect 會被記錄）", root.spy_calls() >= 1,
                 f"記錄 {root.spy_calls()} 次")
         cases: list[tuple[str, list[str], dict, int, str, Optional[str]]] = [
@@ -317,13 +328,15 @@ def run_v15(version: str, P: list[dict], C: list[dict], E: list[dict]) -> None:
                    f"print('LOADED=' + json.dumps(sorted(m for m in sys.modules if m.split('.')[0] in {sorted(FORBIDDEN_MODULES)!r})))\n")
         for label, args in (("未傳 --mode 的中止路徑", None), ("通過驗證後缺設定的中止路徑", "update")):
             script = wrapper if args else wrapper.replace("'--mode', 'update'", "'--bogus'")
-            env = {k: v for k, v in os.environ.items() if not k.startswith("PG") and k not in ("DATABASE_URL", "DATABASE_URL_TEST")}
-            proc = subprocess.run([sys.executable, "-c", script, str(root.root / "src" / "index_chunks.py")],
-                                  capture_output=True, text=True, encoding="utf-8", env=env, timeout=300)
-            CAPTURED.append(proc.stdout + proc.stderr)
-            m = re.search(r"LOADED=(.*)", proc.stdout)
-            loaded = json.loads(m.group(1)) if m else None
-            LOG.add("V15", f"動態：{label}沒有載入模型相關模組", loaded == [], f"載入 {loaded}")
+            try:
+                proc = run_sub([sys.executable, "-c", script, str(root.root / "src" / "index_chunks.py")], sub_env())
+                CAPTURED.append((proc.stdout or "") + (proc.stderr or ""))
+                m = re.search(r"LOADED=(.*)", proc.stdout or "")
+                loaded = json.loads(m.group(1)) if m else None
+                detail = f"載入 {loaded}" if m else f"子行程輸出不完整（無 LOADED 行），exit={proc.returncode}：{first_line(proc.stderr)}"
+            except Exception as exc:   # noqa: BLE001（子行程逾時、輸出解析失敗等：記為不通過，不中斷）
+                loaded, detail = None, f"{type(exc).__name__}：{first_line(str(exc))}"
+            LOG.add("V15", f"動態：{label}沒有載入模型相關模組", loaded == [], detail)
     finally:
         root.cleanup()
 
@@ -380,14 +393,19 @@ def run_v17_v18() -> None:
 
 def run_offline() -> None:
     version, P, C, E = load_real_artifacts()
-    print("[離線] V17、V18（靜態）")
-    run_v17_v18()
-    print("[離線] V13a（連線前中止的負向案例）")
-    run_v13a(version, P, C, E)
-    print("[離線] V15（無模型載入）")
-    run_v15(version, P, C, E)
-    print("[離線] V19（入庫前驗證先於連線）")
-    run_v19(version, P, C, E)
+    groups: list[tuple[str, str, str, Callable[[], Any]]] = [
+        ("V17／V18", "V17、V18（靜態）", "靜態檢查", run_v17_v18),
+        ("V13a", "V13a（連線前中止的負向案例）", "連線前中止的負向案例", lambda: run_v13a(version, P, C, E)),
+        ("V15", "V15（無模型載入）", "無模型載入", lambda: run_v15(version, P, C, E)),
+        ("V19", "V19（入庫前驗證先於連線）", "入庫前驗證先於連線", lambda: run_v19(version, P, C, E)),
+    ]
+    for check_id, banner, title, fn in groups:
+        print(f"[離線] {banner}")
+        try:
+            fn()
+        except Exception as exc:   # noqa: BLE001（單組例外記為不通過，繼續其餘各組）
+            LOG.add(check_id, title, False, f"執行時發生例外 {type(exc).__name__}：{mask(first_line(str(exc)))}"
+                    + " | " + mask(traceback.format_exc().splitlines()[-3].strip()))
     ok = bool(REPORT_CHECKS) and all(ok for _, ok, _ in REPORT_CHECKS)
     LOG.add("V16", "CLI 報告欄位齊全且不含密碼或 URL（離線案例）", ok,
             f"{len(REPORT_CHECKS)} 份；異常 {[(c, d) for c, o, d in REPORT_CHECKS if not o][:3]}")
@@ -563,7 +581,18 @@ def run_full(log_intro: list[str]) -> None:
                     f"新增 parents {counts.parents.inserted}、children {counts.children.inserted}")
         guarded("V22", "空表 update", v22)
 
-        base_counts = rebuild_base()
+        # V12 對帳（S3）：這次 rebuild 之前不 clean()；表內必須有已知筆數的該 version 資料。
+        # V22 成功時表內即為其寫入的資料；V22 被跳過或失敗而表內沒有該 version 資料時，先以 write_update 寫入一份。
+        def version_rows() -> tuple[int, int]:
+            return (scalar_count(conn, "SELECT count(*) FROM rag.parents WHERE version = %s", (version,)),
+                    scalar_count(conn, "SELECT count(*) FROM rag.children WHERE version = %s", (version,)))
+
+        seeded = False
+        if version_rows() == (0, 0):
+            ic.write_update(conn, version, P, Crows)
+            seeded = True
+        measured_before = version_rows()                    # 實測：rebuild 前該 version 的列數
+        base_counts = ic.write_rebuild(conn, version, P, Crows)
         base_fp = art_fp(P, Crows)
 
         # V2～V7、V23：基準狀態（rebuild 後）
@@ -573,9 +602,14 @@ def run_full(log_intro: list[str]) -> None:
             t_p, t_c = (scalar_count(conn, "SELECT count(*) FROM rag.parents"), scalar_count(conn, "SELECT count(*) FROM rag.children"))
             LOG.add("V2", "筆數等於產物即時計算（不硬寫）", (n_p, n_c, t_p, t_c) == (len(P), len(C), len(P), len(C)),
                     f"parents {n_p}/{len(P)}、children {n_c}/{len(C)}（全表 {t_p}、{t_c}）")
-            LOG.add("V12", "rebuild 的刪除前列數與各表刪除筆數對帳（S3）",
-                    (base_counts.parents.deleted_before, base_counts.children.deleted_before) == (len(P), len(C)),
-                    f"rebuild 前列數 parents {base_counts.parents.deleted_before}、children {base_counts.children.deleted_before}（此時表內為 V22 寫入的資料）")
+            bp, bc = base_counts.parents, base_counts.children
+            reconciled = (measured_before[0] > 0 and measured_before[1] > 0       # 實測值為 0 不得視為通過
+                          and (bp.deleted_before, bp.deleted) == (measured_before[0], measured_before[0])
+                          and (bc.deleted_before, bc.deleted) == (measured_before[1], measured_before[1]))
+            LOG.add("V12", "rebuild 的刪除前列數與各表刪除筆數對帳（S3）", reconciled,
+                    f"rebuild 前實測 parents {measured_before[0]}、children {measured_before[1]}；"
+                    f"deleted_before {bp.deleted_before}/{bc.deleted_before}、deleted {bp.deleted}/{bc.deleted}"
+                    f"（資料來源：{'V22 之外另寫入一份' if seeded else 'V22 寫入的資料'}）")
         guarded("V2", "筆數", v2)
 
         def v3() -> None:
